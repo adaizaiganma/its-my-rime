@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+.android/
+.idea/
+build/
+app/build/
+local.properties
+*.iml
+.reference-*/
+.reference-*.apk
+lib/
+tmp/
+gradle-thread.txt
