@@ -70,10 +70,13 @@ object RimeManager {
                     custom.writeText("patch:\n  schema_list:\n    - schema: rime_ice\n")
                 }
 
+                val quickPhrasesChanged = QuickPhrases.syncRimeFile(app, shared, user)
+
                 setStatus(false, true, "啟動 Rime 引擎…")
                 engine.initialize(user.absolutePath, shared.absolutePath)
                 check(RimeEngine.isInitialized()) { "Rime 引擎初始化失敗" }
-                if (assetsChanged || conversionChanged || deploymentMarker.takeIf { it.exists() }?.readText() != version) {
+                if (assetsChanged || conversionChanged || quickPhrasesChanged ||
+                    deploymentMarker.takeIf { it.exists() }?.readText() != version) {
                     setStatus(false, true, "首次部署詞庫，請稍候…")
                     check(engine.deploy()) { "霧凇拼音部署失敗" }
                     deploymentMarker.writeText(version)
@@ -95,6 +98,8 @@ object RimeManager {
         worker.execute {
             try {
                 setStatus(false, true, "正在重新部署 Rime…")
+                QuickPhrases.syncRimeFile(context, File(context.filesDir, "rime-shared"),
+                    File(context.filesDir, "rime-user"))
                 check(engine.deploy()) { "重新部署失敗" }
                 check(engine.ensureSession()) { "Rime 無法建立輸入會話" }
                 check(engine.switchSchema(SCHEMA)) { "找不到霧凇拼音方案" }

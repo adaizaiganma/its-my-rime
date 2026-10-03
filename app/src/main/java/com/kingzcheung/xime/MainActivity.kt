@@ -36,6 +36,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -53,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -94,6 +96,7 @@ class MainActivity : ComponentActivity() {
     private var setup by mutableStateOf(SetupState(false, false))
     private var darkMode by mutableStateOf(false)
     private var spaceCursorSensitivity by mutableStateOf(SpaceCursorSettings.DEFAULT)
+    private var quickPhrases by mutableStateOf(emptyList<QuickPhrase>())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +104,7 @@ class MainActivity : ComponentActivity() {
         setup = readSetup()
         darkMode = AppearanceSettings.isDark(this)
         spaceCursorSensitivity = SpaceCursorSettings.read(this)
+        quickPhrases = QuickPhrases.entries(this)
         applySystemBars()
         setContent {
             val palette = if (darkMode) DarkPalette else LightPalette
@@ -126,6 +130,7 @@ class MainActivity : ComponentActivity() {
                     engine = engineStatus,
                     darkMode = darkMode,
                     spaceCursorSensitivity = spaceCursorSensitivity,
+                    quickPhrases = quickPhrases,
                     palette = palette,
                     onEnable = { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
                     onSelect = { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker() },
@@ -138,6 +143,26 @@ class MainActivity : ComponentActivity() {
                     onSpaceCursorSensitivityChange = { level ->
                         spaceCursorSensitivity = level
                         SpaceCursorSettings.write(this, level)
+                    },
+                    onQuickPhraseSave = { oldCode, code, text ->
+                        val normalizedCode = QuickPhrases.normalizeCode(code)
+                        val normalizedText = text.trim()
+                        val error = QuickPhrases.validationError(quickPhrases, oldCode,
+                            normalizedCode, normalizedText)
+                        if (error == null) {
+                            val updated = quickPhrases.filterNot { it.code == oldCode } +
+                                QuickPhrase(normalizedCode, normalizedText)
+                            QuickPhrases.save(this, updated)
+                            quickPhrases = updated
+                            RimeManager.redeploy(this)
+                        }
+                        error
+                    },
+                    onQuickPhraseDelete = { code ->
+                        val updated = quickPhrases.filterNot { it.code == code }
+                        QuickPhrases.save(this, updated)
+                        quickPhrases = updated
+                        RimeManager.redeploy(this)
                     }
                 )
             }
@@ -149,6 +174,7 @@ class MainActivity : ComponentActivity() {
         setup = readSetup()
         darkMode = AppearanceSettings.isDark(this)
         spaceCursorSensitivity = SpaceCursorSettings.read(this)
+        quickPhrases = QuickPhrases.entries(this)
         applySystemBars()
     }
 
@@ -178,14 +204,21 @@ private fun SettingsScreen(
     engine: EngineStatus,
     darkMode: Boolean,
     spaceCursorSensitivity: Int,
+    quickPhrases: List<QuickPhrase>,
     palette: AppPalette,
     onEnable: () -> Unit,
     onSelect: () -> Unit,
     onRedeploy: () -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
-    onSpaceCursorSensitivityChange: (Int) -> Unit
+    onSpaceCursorSensitivityChange: (Int) -> Unit,
+    onQuickPhraseSave: (String?, String, String) -> String?,
+    onQuickPhraseDelete: (String) -> Unit
 ) {
     var testText by remember { mutableStateOf("") }
+    var shortcutCode by remember { mutableStateOf("") }
+    var shortcutText by remember { mutableStateOf("") }
+    var editingShortcut by remember { mutableStateOf<String?>(null) }
+    var shortcutError by remember { mutableStateOf<String?>(null) }
     Column(
         modifier = Modifier.fillMaxSize().background(palette.page).verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 26.dp),
@@ -220,11 +253,11 @@ private fun SettingsScreen(
             }
         }
 
-        SectionTitle("開始使用", "01 / 05", palette)
+        SectionTitle("開始使用", "01 / 06", palette)
         SetupCard("啟用輸入法", "在系統設定中開啟 It's My Rime", setup.enabled, onEnable, palette)
         SetupCard("設為目前鍵盤", "從輸入法清單選擇 It's My Rime", setup.selected, onSelect, palette)
 
-        SectionTitle("試試手感", "02 / 05", palette)
+        SectionTitle("試試手感", "02 / 06", palette)
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
             Column(Modifier.fillMaxWidth().padding(18.dp)) {
                 Text("輸入測試", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = palette.text)
@@ -242,7 +275,87 @@ private fun SettingsScreen(
             }
         }
 
-        SectionTitle("Rime 引擎", "03 / 05", palette)
+        SectionTitle("常用字", "03 / 06", palette)
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+            Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("輸入縮寫，從候選欄選擇常用內容。", fontSize = 13.sp, color = palette.muted)
+                OutlinedTextField(
+                    value = shortcutCode,
+                    onValueChange = { shortcutCode = it; shortcutError = null },
+                    label = { Text("縮寫") },
+                    placeholder = { Text("例如 id") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = shortcutText,
+                    onValueChange = { shortcutText = it; shortcutError = null },
+                    label = { Text("輸出內容") },
+                    placeholder = { Text("例如 E14135065") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (shortcutError != null) {
+                    Text(shortcutError.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (editingShortcut != null) {
+                        TextButton(onClick = {
+                            editingShortcut = null
+                            shortcutCode = ""
+                            shortcutText = ""
+                            shortcutError = null
+                        }) { Text("取消") }
+                    }
+                    Button(onClick = {
+                        val error = onQuickPhraseSave(editingShortcut, shortcutCode, shortcutText)
+                        shortcutError = error
+                        if (error == null) {
+                            editingShortcut = null
+                            shortcutCode = ""
+                            shortcutText = ""
+                        }
+                    }, shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = palette.button)) {
+                        Text(if (editingShortcut == null) "新增常用字" else "儲存修改")
+                    }
+                }
+                if (quickPhrases.isNotEmpty()) {
+                    Text("已儲存 ${quickPhrases.size} 筆", fontSize = 12.sp, color = palette.muted)
+                    quickPhrases.forEach { phrase ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Surface(shape = RoundedCornerShape(9.dp), color = palette.soft) {
+                                Text(phrase.code, Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                                    color = palette.accent, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                            Text(phrase.text, Modifier.weight(1f).padding(horizontal = 10.dp),
+                                color = palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                fontSize = 14.sp)
+                            TextButton(onClick = {
+                                editingShortcut = phrase.code
+                                shortcutCode = phrase.code
+                                shortcutText = phrase.text
+                                shortcutError = null
+                            }) { Text("編輯") }
+                            TextButton(onClick = {
+                                onQuickPhraseDelete(phrase.code)
+                                if (editingShortcut == phrase.code) {
+                                    editingShortcut = null
+                                    shortcutCode = ""
+                                    shortcutText = ""
+                                }
+                                shortcutError = null
+                            }) { Text("刪除") }
+                        }
+                    }
+                }
+                Text("儲存後會自動重新部署 Rime；常用字適用於中文輸入模式。",
+                    fontSize = 12.sp, color = palette.muted)
+            }
+        }
+
+        SectionTitle("Rime 引擎", "04 / 06", palette)
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
             Column(Modifier.fillMaxWidth().padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -276,7 +389,7 @@ private fun SettingsScreen(
                 Text("重新編譯目前的霧凇拼音設定與詞庫。", color = palette.muted, fontSize = 12.sp)
             }
         }
-        SectionTitle("外觀", "04 / 05", palette)
+        SectionTitle("外觀", "05 / 06", palette)
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
             Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(40.dp).background(palette.soft, RoundedCornerShape(12.dp)),
@@ -290,7 +403,7 @@ private fun SettingsScreen(
                 Switch(checked = darkMode, onCheckedChange = onDarkModeChange)
             }
         }
-        SectionTitle("鍵盤操作", "05 / 05", palette)
+        SectionTitle("鍵盤操作", "06 / 06", palette)
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
             Column(Modifier.fillMaxWidth().padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
