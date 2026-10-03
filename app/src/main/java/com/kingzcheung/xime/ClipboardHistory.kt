@@ -2,11 +2,15 @@ package com.kingzcheung.xime
 
 import android.content.Context
 import android.net.Uri
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 
 data class ClipboardEntry(
     val text: String? = null,
@@ -23,29 +27,51 @@ data class ClipboardEntry(
 object ClipboardHistory {
     private const val PREFS = "clipboard_history"
     private const val ENTRIES = "entries"
+    private const val CLEARED_AT = "cleared_at"
     private const val MAX_RECENT = 30
     private const val MAX_PINNED = 20
     private const val MAX_TEXT_LENGTH = 100_000
     private const val MAX_IMAGE_BYTES = 12 * 1024 * 1024
     private const val IMAGE_DIRECTORY = "clipboard_images"
+    private const val CLEANUP_WORK = "clipboard_history_cleanup"
+    private const val RECENT_LIFETIME_MS = 24L * 60 * 60 * 1000
 
     @Synchronized fun entries(context: Context): List<ClipboardEntry> = read(context)
-        .sortedWith(compareByDescending<ClipboardEntry> { it.pinned }.thenByDescending { it.copiedAt })
+        .sortedByDescending { it.copiedAt }
 
-    @Synchronized fun record(context: Context, text: String): Boolean {
-        if (text.isEmpty() || text.length > MAX_TEXT_LENGTH) return false
+    @Synchronized fun startCleanup(context: Context) {
+        scheduleCleanup(context, read(context))
+    }
+
+    @Synchronized fun clearRecent(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putLong(CLEARED_AT, System.currentTimeMillis()).apply()
+        save(context, read(context).filter { it.pinned })
+    }
+
+    fun captureTime(context: Context, timestamp: Long, fromChange: Boolean): Long? {
+        val now = System.currentTimeMillis()
+        val copiedAt = if (timestamp > 0) timestamp.coerceAtMost(now)
+            else if (fromChange) now else return null
+        if (copiedAt <= now - RECENT_LIFETIME_MS) return null
+        return copiedAt.takeIf { it > lastClearedAt(context) }
+    }
+
+    @Synchronized fun record(context: Context, text: String, copiedAt: Long = System.currentTimeMillis()): Boolean {
+        if (text.isEmpty() || text.length > MAX_TEXT_LENGTH || copiedAt <= lastClearedAt(context)) return false
         val existing = read(context)
         val updated = ClipboardEntry(text = text, pinned = existing.firstOrNull { it.text == text }?.pinned ?: false,
-            copiedAt = System.currentTimeMillis())
+            copiedAt = copiedAt)
         save(context, listOf(updated) + existing.filterNot { it.id == updated.id })
         return true
     }
 
     @Synchronized fun recordImageFile(context: Context, source: File, mimeType: String, label: String): ClipboardEntry? =
-        source.inputStream().use { saveImage(context, it, mimeType, label) }
+        source.inputStream().use { saveImage(context, it, mimeType, label, System.currentTimeMillis(), false) }
 
-    @Synchronized fun recordImageUri(context: Context, uri: Uri, mimeType: String, label: String): ClipboardEntry? =
-        context.contentResolver.openInputStream(uri)?.use { saveImage(context, it, mimeType, label) }
+    @Synchronized fun recordImageUri(context: Context, uri: Uri, mimeType: String, label: String,
+                                     copiedAt: Long = System.currentTimeMillis()): ClipboardEntry? =
+        context.contentResolver.openInputStream(uri)?.use { saveImage(context, it, mimeType, label, copiedAt, true) }
 
     @Synchronized fun togglePinned(context: Context, id: String): Boolean? {
         val existing = read(context)
@@ -61,7 +87,8 @@ object ClipboardHistory {
         return File(File(context.filesDir, IMAGE_DIRECTORY), name).takeIf { it.isFile }
     }
 
-    private fun saveImage(context: Context, input: InputStream, mimeType: String, label: String): ClipboardEntry? {
+    private fun saveImage(context: Context, input: InputStream, mimeType: String, label: String,
+                          copiedAt: Long, respectClearAt: Boolean): ClipboardEntry? {
         val extension = when (mimeType.lowercase()) {
             "image/jpeg", "image/jpg" -> "jpg"
             "image/png" -> "png"
@@ -86,13 +113,14 @@ object ClipboardHistory {
                 }
             }
             if (size == 0) return null
+            if (respectClearAt && copiedAt <= lastClearedAt(context)) return null
             val fileName = digest.digest().joinToString("") { "%02x".format(it) } + ".$extension"
             val target = File(directory, fileName)
             if (!target.isFile && !temp.renameTo(target)) return null
             val existing = read(context)
             val updated = ClipboardEntry(imageFileName = fileName, mimeType = mimeType, label = label,
                 pinned = existing.firstOrNull { it.imageFileName == fileName }?.pinned ?: false,
-                copiedAt = System.currentTimeMillis())
+                copiedAt = copiedAt)
             save(context, listOf(updated) + existing.filterNot { it.id == updated.id })
             return updated
         } finally {
@@ -100,7 +128,14 @@ object ClipboardHistory {
         }
     }
 
-    private fun read(context: Context): List<ClipboardEntry> = runCatching {
+    private fun read(context: Context): List<ClipboardEntry> {
+        val stored = load(context)
+        val active = stored.filter { it.pinned || it.copiedAt > System.currentTimeMillis() - RECENT_LIFETIME_MS }
+        if (active.size != stored.size) save(context, active)
+        return active
+    }
+
+    private fun load(context: Context): List<ClipboardEntry> = runCatching {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(ENTRIES, "[]") ?: "[]"
         val array = JSONArray(raw)
         buildList {
@@ -121,7 +156,9 @@ object ClipboardHistory {
     }.getOrDefault(emptyList())
 
     private fun save(context: Context, entries: List<ClipboardEntry>) {
-        val recent = entries.filterNot { it.pinned }.sortedByDescending { it.copiedAt }.take(MAX_RECENT)
+        val cutoff = System.currentTimeMillis() - RECENT_LIFETIME_MS
+        val recent = entries.filterNot { it.pinned }.filter { it.copiedAt > cutoff }
+            .sortedByDescending { it.copiedAt }.take(MAX_RECENT)
         val pinned = entries.filter { it.pinned }.sortedByDescending { it.copiedAt }.take(MAX_PINNED)
         val saved = pinned + recent
         val array = JSONArray()
@@ -140,5 +177,19 @@ object ClipboardHistory {
         File(context.filesDir, IMAGE_DIRECTORY).listFiles()?.forEach { file ->
             if (file.isFile && file.name !in retained) file.delete()
         }
+        scheduleCleanup(context, saved)
     }
+
+    private fun scheduleCleanup(context: Context, entries: List<ClipboardEntry>) {
+        val manager = WorkManager.getInstance(context.applicationContext)
+        if (entries.none { !it.pinned }) {
+            manager.cancelUniqueWork(CLEANUP_WORK)
+        } else {
+            val request = PeriodicWorkRequestBuilder<ClipboardCleanupWorker>(1, TimeUnit.HOURS).build()
+            manager.enqueueUniquePeriodicWork(CLEANUP_WORK, ExistingPeriodicWorkPolicy.KEEP, request)
+        }
+    }
+
+    private fun lastClearedAt(context: Context): Long =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(CLEARED_AT, 0)
 }

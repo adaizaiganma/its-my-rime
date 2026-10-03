@@ -79,6 +79,7 @@ private val LETTER_SYMBOLS = mapOf(
 
 private enum class ShiftState { OFF, ONCE, LOCKED }
 private enum class EmojiTab { EMOJI, GIF, MYGO }
+private enum class ClipboardTab { RECENT, PINNED }
 
 private data class KeyOutcome(
     val state: RimeProcessResult? = null,
@@ -120,6 +121,10 @@ class IceInputMethodService : InputMethodService() {
     private var expandedList: CandidateFlowLayout? = null
     private var clipboardPanel: LinearLayout? = null
     private var clipboardList: LinearLayout? = null
+    private var clipboardScroll: ScrollView? = null
+    private var clipboardRecentTab: TextView? = null
+    private var clipboardPinnedTab: TextView? = null
+    private var clipboardClearButton: TextView? = null
     private var emojiToolbar: LinearLayout? = null
     private var emojiCategoryScroll: HorizontalScrollView? = null
     private var emojiBackButton: ImageView? = null
@@ -130,6 +135,7 @@ class IceInputMethodService : InputMethodService() {
     private var emojiBody: LinearLayout? = null
     private var expanded = false
     private var clipboardOpen = false
+    private var clipboardTab = ClipboardTab.RECENT
     private var emojiOpen = false
     private var emojiTab = EmojiTab.EMOJI
     private var emojiCategory = -1
@@ -192,6 +198,7 @@ class IceInputMethodService : InputMethodService() {
         super.onCreate()
         appearancePreferences.registerOnSharedPreferenceChangeListener(appearanceListener)
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
+        ClipboardHistory.startCleanup(this)
         captureClipboard()
         RimeManager.observe(statusObserver)
         RimeManager.ensureReady(this)
@@ -385,28 +392,70 @@ class IceInputMethodService : InputMethodService() {
         }
         clipboardPanel?.addView(LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(2), dp(12), dp(4))
+            setPadding(dp(12), dp(2), dp(8), dp(2))
             addView(TextView(this@IceInputMethodService).apply {
                 text = "剪貼簿"
                 setTextColor(ink)
                 textSize = 15f
                 typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER_VERTICAL
-            }, LinearLayout.LayoutParams(0, dp(30), 1f))
+            }, LinearLayout.LayoutParams(-2, dp(30)))
             addView(TextView(this@IceInputMethodService).apply {
-                text = "點選貼上 · 長按收藏"
+                text = "長按收藏"
                 setTextColor(muted)
                 textSize = 11f
                 gravity = Gravity.CENTER_VERTICAL
-            })
+                setPadding(dp(10), 0, 0, 0)
+            }, LinearLayout.LayoutParams(0, dp(30), 1f))
+            clipboardClearButton = TextView(this@IceInputMethodService).apply {
+                text = "清空最近"
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                setTextColor(blue)
+                background = keyBackground(specialSurface)
+                onHapticClick {
+                    ClipboardHistory.clearRecent(this@IceInputMethodService)
+                    renderClipboardHistory()
+                }
+            }
+            addView(clipboardClearButton, LinearLayout.LayoutParams(dp(78), dp(30)))
         }, LinearLayout.LayoutParams(-1, dp(36)))
-        val clipboardScroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
+        val clipboardTabs = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), 0, dp(6), dp(4))
+        }
+        clipboardRecentTab = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 13f
+            onHapticClick {
+                clipboardTab = ClipboardTab.RECENT
+                renderClipboardHistory()
+                clipboardScroll?.scrollTo(0, 0)
+            }
+        }
+        clipboardPinnedTab = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 13f
+            onHapticClick {
+                clipboardTab = ClipboardTab.PINNED
+                renderClipboardHistory()
+                clipboardScroll?.scrollTo(0, 0)
+            }
+        }
+        clipboardTabs.addView(clipboardRecentTab, LinearLayout.LayoutParams(0, dp(34), 1f).apply {
+            rightMargin = dp(4)
+        })
+        clipboardTabs.addView(clipboardPinnedTab, LinearLayout.LayoutParams(0, dp(34), 1f))
+        clipboardPanel?.addView(clipboardTabs, LinearLayout.LayoutParams(-1, dp(38)))
+        val clipboardScrollView = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
+        clipboardScroll = clipboardScrollView
         clipboardList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(6), 0, dp(6), dp(6))
         }
-        clipboardScroll.addView(clipboardList)
-        clipboardPanel?.addView(clipboardScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        clipboardScrollView.addView(clipboardList)
+        clipboardPanel?.addView(clipboardScrollView, LinearLayout.LayoutParams(-1, 0, 1f))
         keyboardArea.addView(clipboardPanel, FrameLayout.LayoutParams(-1, -1))
         emojiPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -716,12 +765,13 @@ class IceInputMethodService : InputMethodService() {
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             clip.description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true) return
+        val copiedAt = ClipboardHistory.captureTime(this, clip.description.timestamp, fromChange) ?: return
         val item = clip.getItemAt(0)
         val text = item.text?.toString()
         if (text != null) {
             if (!fromChange && text == lastCapturedClipboardText) return
             lastCapturedClipboardText = text
-            if (ClipboardHistory.record(this, text) && clipboardOpen) renderClipboardHistory()
+            if (ClipboardHistory.record(this, text, copiedAt) && clipboardOpen) renderClipboardHistory()
             return
         }
         val uri = item.uri ?: return
@@ -731,7 +781,7 @@ class IceInputMethodService : InputMethodService() {
         if (mime == null) return
         val label = clip.description.label?.toString().orEmpty().ifBlank { "圖片" }
         mygoExecutor.execute {
-            val stored = runCatching { ClipboardHistory.recordImageUri(this, uri, mime, label) }.getOrNull()
+            val stored = runCatching { ClipboardHistory.recordImageUri(this, uri, mime, label, copiedAt) }.getOrNull()
             if (stored != null) mainHandler.post { if (clipboardOpen) renderClipboardHistory() }
         }
     }
@@ -1116,6 +1166,7 @@ class IceInputMethodService : InputMethodService() {
         if (secure) return
         closeExpandedCandidates()
         captureClipboard()
+        clipboardTab = ClipboardTab.RECENT
         clipboardOpen = true
         dismissPreeditPreview()
         rows?.visibility = View.GONE
@@ -1898,10 +1949,29 @@ class IceInputMethodService : InputMethodService() {
     private fun renderClipboardHistory() {
         val list = clipboardList ?: return
         list.removeAllViews()
-        val entries = ClipboardHistory.entries(this)
+        val allEntries = ClipboardHistory.entries(this)
+        val recentCount = allEntries.count { !it.pinned }
+        val pinnedCount = allEntries.size - recentCount
+        clipboardRecentTab?.apply {
+            text = "最近 24h · $recentCount"
+            setTextColor(if (clipboardTab == ClipboardTab.RECENT) blue else muted)
+            typeface = if (clipboardTab == ClipboardTab.RECENT) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            background = if (clipboardTab == ClipboardTab.RECENT) rounded(specialSurface, 10) else null
+        }
+        clipboardPinnedTab?.apply {
+            text = "收藏 · $pinnedCount"
+            setTextColor(if (clipboardTab == ClipboardTab.PINNED) blue else muted)
+            typeface = if (clipboardTab == ClipboardTab.PINNED) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            background = if (clipboardTab == ClipboardTab.PINNED) rounded(specialSurface, 10) else null
+        }
+        clipboardClearButton?.visibility = if (clipboardTab == ClipboardTab.RECENT && recentCount > 0)
+            View.VISIBLE else View.GONE
+        val entries = allEntries.filter { it.pinned == (clipboardTab == ClipboardTab.PINNED) }
         if (entries.isEmpty()) {
             list.addView(TextView(this).apply {
-                text = "尚無複製記錄\n複製文字或圖片後會顯示在這裡"
+                text = if (clipboardTab == ClipboardTab.RECENT) {
+                    "最近 24 小時沒有複製記錄\n複製文字或圖片後會顯示在這裡"
+                } else "尚無收藏\n在「最近」長按項目即可收藏"
                 setTextColor(muted)
                 textSize = 14f
                 gravity = Gravity.CENTER

@@ -101,6 +101,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         RimeManager.ensureReady(this)
+        ClipboardHistory.startCleanup(this)
         setup = readSetup()
         darkMode = AppearanceSettings.isDark(this)
         spaceCursorSensitivity = SpaceCursorSettings.read(this)
