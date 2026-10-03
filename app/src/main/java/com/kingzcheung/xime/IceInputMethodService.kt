@@ -64,6 +64,7 @@ private const val RETURN = 0xff0d
 private const val RIME_CHAR_LEFT = 0xff96
 private const val RIME_CHAR_RIGHT = 0xff98
 private const val SHIFT_MASK = 1
+private const val DELETE_REPEAT_INTERVAL_MS = 65L
 private val PINYIN_COMMENT = Regex("［([A-Za-z0-9üÜ'\\s]+)］")
 private val LETTER_SYMBOLS = mapOf(
     'a' to "@", 's' to "#", 'd' to "$", 'f' to "_", 'g' to "&",
@@ -2082,7 +2083,7 @@ class IceInputMethodService : InputMethodService() {
                             ShiftState.ONCE -> "Shift，下一個字母大寫"
                             ShiftState.LOCKED -> "大寫鎖定"
                         }
-                        "DEL" -> "刪除，上滑清空，下滑復原"
+                        "DEL" -> "刪除，長按連續刪除，上滑清空，下滑復原"
                         else -> if (mediaQueryEditing) "搜尋 ${if (mediaQueryTab == EmojiTab.GIF) "GIF" else "MyGO 梗圖"}" else "換行"
                     }
                     if (key == "DEL") {
@@ -2371,20 +2372,30 @@ class IceInputMethodService : InputMethodService() {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val token = generation
-                lateinit var gesture: NumberKeyGesture
+                lateinit var gesture: DeleteKeyGesture
+                val repeat = object : Runnable {
+                    override fun run() {
+                        if (view.tag !== gesture || gesture.cancelled || gesture.choice != -1 ||
+                            token != generation || !view.isAttachedToWindow) return
+                        gesture.repeated = true
+                        handleKey("DEL")
+                        view.postDelayed(this, DELETE_REPEAT_INTERVAL_MS)
+                    }
+                }
                 val longPress = Runnable {
                     if (!gesture.cancelled && token == generation && view.isAttachedToWindow) {
                         gesture.held = true
                         gesture.choice = -1
                         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        repeat.run()
                     }
                 }
-                gesture = NumberKeyGesture(event.rawX, event.rawY, longPress, choice = -1)
+                gesture = DeleteKeyGesture(event.rawX, event.rawY, longPress, repeat)
                 view.postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 view.tag = gesture
             }
             MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val gesture = view.tag as? NumberKeyGesture ?: return true
+                val gesture = view.tag as? DeleteKeyGesture ?: return true
                 val dx = event.rawX - gesture.startX
                 val dy = event.rawY - gesture.startY
                 if (!gesture.held && !gesture.cancelled && event.actionMasked != MotionEvent.ACTION_CANCEL) {
@@ -2408,18 +2419,25 @@ class IceInputMethodService : InputMethodService() {
                     }
                     if (choice != gesture.choice) {
                         gesture.choice = choice
-                        if (choice == -1) holdPopup?.visibility = View.GONE
-                        else showDeleteActionPopup(view, choice)
+                        if (choice == -1) {
+                            holdPopup?.visibility = View.GONE
+                            view.postDelayed(gesture.repeat, DELETE_REPEAT_INTERVAL_MS)
+                        } else {
+                            view.removeCallbacks(gesture.repeat)
+                            showDeleteActionPopup(view, choice)
+                        }
                     }
                 }
                 if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                     view.removeCallbacks(gesture.longPress)
+                    view.removeCallbacks(gesture.repeat)
                     view.tag = null
                     holdPopup?.visibility = View.GONE
                     if (event.actionMasked == MotionEvent.ACTION_UP) {
                         if (gesture.held) when (gesture.choice) {
                             0 -> clearAllText()
                             1 -> restoreClearedText()
+                            else -> if (!gesture.repeated) handleKey("DEL")
                         } else if (!gesture.cancelled) handleKey("DEL")
                     }
                 }
@@ -2767,6 +2785,17 @@ class IceInputMethodService : InputMethodService() {
         var cancelled: Boolean = false,
         var swipeAlternate: Boolean = false,
         var choice: Int = 1
+    )
+
+    private class DeleteKeyGesture(
+        val startX: Float,
+        val startY: Float,
+        val longPress: Runnable,
+        val repeat: Runnable,
+        var held: Boolean = false,
+        var cancelled: Boolean = false,
+        var choice: Int = -1,
+        var repeated: Boolean = false
     )
 
     private class SwipeKeyGesture(
