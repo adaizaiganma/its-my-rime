@@ -13,6 +13,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Build
@@ -65,6 +66,9 @@ private const val RIME_CHAR_LEFT = 0xff96
 private const val RIME_CHAR_RIGHT = 0xff98
 private const val SHIFT_MASK = 1
 private const val DELETE_REPEAT_INTERVAL_MS = 65L
+private const val KEY_CELL_HEIGHT_DP = 55
+private const val KEY_HORIZONTAL_INSET_DP = 1
+private const val KEY_VERTICAL_INSET_DP = 2
 private val PINYIN_COMMENT = Regex("［([A-Za-z0-9üÜ'\\s]+)］")
 private val LETTER_SYMBOLS = mapOf(
     'a' to "@", 's' to "#", 'd' to "$", 'f' to "_", 'g' to "&",
@@ -2149,10 +2153,13 @@ class IceInputMethodService : InputMethodService() {
                 "EMOJI", "PUNCT" -> 1f
                 else -> if (bottom) 1.15f else 1f
             }
-            val params = LinearLayout.LayoutParams(0, dp(47), weight).apply {
-                setMargins(dp(2), dp(4), dp(2), dp(4))
-            }
-            row.addView(keyView, params)
+            // Keep the visual gap, but let the key receive touches across its whole cell.
+            keyView.background = InsetDrawable(
+                keyView.background,
+                dp(KEY_HORIZONTAL_INSET_DP), dp(KEY_VERTICAL_INSET_DP),
+                dp(KEY_HORIZONTAL_INSET_DP), dp(KEY_VERTICAL_INSET_DP)
+            )
+            row.addView(keyView, LinearLayout.LayoutParams(0, dp(KEY_CELL_HEIGHT_DP), weight))
         }
         containerAdd(row)
     }
