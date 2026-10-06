@@ -248,7 +248,7 @@ class IceInputMethodService : InputMethodService() {
             text = if (RimeManager.status.ready) modeCaption() else RimeManager.status.message
             setTextColor(ink)
             textSize = 13f
-            typeface = UiFonts.bodyTypeface(this@IceInputMethodService, mediumWeight = true)
+            typeface = UiFonts.displayTypeface(this@IceInputMethodService)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER_VERTICAL
