@@ -88,6 +88,8 @@ private data class KeyOutcome(
     val enter: Boolean = false
 )
 
+private data class SymbolChoices(val values: List<String>, val preferred: Int)
+
 class IceInputMethodService : InputMethodService() {
     private var darkMode = false
     private val ink get() = if (darkMode) Color.rgb(232, 240, 252) else Color.rgb(28, 47, 74)
@@ -2088,6 +2090,23 @@ class IceInputMethodService : InputMethodService() {
     private fun letterLabel(letter: Char): String =
         if (shiftState == ShiftState.OFF) letter.toString() else letter.uppercase()
 
+    private fun symbolChoices(key: String): SymbolChoices? = when (key) {
+        "(" -> SymbolChoices(listOf(punctuationText("["), punctuationText("{"), "〈", "《", "【"), 3)
+        ")" -> SymbolChoices(listOf(punctuationText("]"), punctuationText("}"), "〉", "】", "》"), 4)
+        "-" -> SymbolChoices(listOf(punctuationText("_"), "–", punctuationText("~"),
+            if (fullWidthPunctuation) "~" else "～", "—"), 2)
+        "\"" -> SymbolChoices(listOf("「", "」", "“", "”", "『", "』"), 0)
+        "*" -> SymbolChoices(listOf("·", "•", "※", "×", "÷"), 0)
+        "+" -> SymbolChoices(listOf(punctuationText("="), "±", "≠", "≈", "∞"), 0)
+        "/" -> SymbolChoices(listOf(punctuationText("\\"), punctuationText("|"), "／", "÷"), 2)
+        ":" -> SymbolChoices(listOf("…", "⋯", "："), 0)
+        ";" -> SymbolChoices(listOf("；", "…", "⋯"), 1)
+        "!" -> SymbolChoices(listOf("¡", "‼", "❗"), 1)
+        "?" -> SymbolChoices(listOf("¿", "⁇", "❔"), 0)
+        "$" -> SymbolChoices(listOf("¥", "€", "£", "₩", "₹"), 0)
+        else -> null
+    }
+
     private fun addRow(keys: List<String>, inset: Int = 0, bottom: Boolean = false, numberHints: Boolean = false) {
         val row = LinearLayout(this).apply {
             gravity = Gravity.CENTER
@@ -2114,6 +2133,7 @@ class IceInputMethodService : InputMethodService() {
                 else -> LETTER_SYMBOLS[letter]?.let(::punctuationText)
             }
             val punctuationKey = key == "PUNCT"
+            val symbolChoices = if (symbols) symbolChoices(key) else null
             val view = TextView(this).apply {
                 text = label
                 if (key == "SHIFT") contentDescription = when (shiftState) {
@@ -2126,7 +2146,7 @@ class IceInputMethodService : InputMethodService() {
                 setTextColor(if (action || shifted) Color.WHITE else if (special) blue else ink)
                 textSize = if (punctuationKey || key == "EMOJI") 21f else if (bottom || special) 14f else 21f
                 typeface = if (special || action) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                if (alternate == null && !punctuationKey) {
+                if (alternate == null && symbolChoices == null && !punctuationKey) {
                     background = keyBackground(if (action || shifted) actionBlue else if (special) specialSurface else keySurface)
                     elevation = dp(1).toFloat()
                     if (key == "SPACE") {
@@ -2197,6 +2217,24 @@ class IceInputMethodService : InputMethodService() {
                         rightMargin = dp(4)
                     })
                     setOnTouchListener { touched, event -> handleLetterKeyTouch(touched, event, key, alternate) }
+                }
+            } else if (symbolChoices != null) {
+                FrameLayout(this).apply {
+                    background = keyBackground(keySurface)
+                    elevation = dp(1).toFloat()
+                    val hint = symbolChoices.values[symbolChoices.preferred]
+                    contentDescription = "$label，長按選擇符號，上滑輸入 $hint"
+                    addView(view, FrameLayout.LayoutParams(-1, -1))
+                    addView(TextView(this@IceInputMethodService).apply {
+                        text = hint
+                        textSize = 10f
+                        setTextColor(muted)
+                        gravity = Gravity.TOP or Gravity.RIGHT
+                    }, FrameLayout.LayoutParams(dp(20), dp(17), Gravity.TOP or Gravity.RIGHT).apply {
+                        topMargin = dp(2)
+                        rightMargin = dp(4)
+                    })
+                    setOnTouchListener { touched, event -> handleSymbolKeyTouch(touched, event, key, symbolChoices) }
                 }
             } else if (punctuationKey) {
                 FrameLayout(this).apply {
@@ -2673,7 +2711,8 @@ class IceInputMethodService : InputMethodService() {
         showChoicePopup(keyView, values, initialHoldChoice(letter))
     }
 
-    private fun showChoicePopup(keyView: View, values: List<String>, selected: Int, emojiChoices: Boolean = false) {
+    private fun showChoicePopup(keyView: View, values: List<String>, selected: Int,
+                                emojiChoices: Boolean = false, anchorSelected: Boolean = false) {
         val popup = holdPopup ?: return
         val frame = inputFrame ?: return
         holdValues = values
@@ -2720,7 +2759,9 @@ class IceInputMethodService : InputMethodService() {
             this.width = width
             height = dp(if (emojiChoices) 48 * rows + 8 else 52)
             leftMargin = (keyPosition[0] - framePosition[0] + keyView.width / 2 -
-                if (emojiChoices) dp(4 + 48 * (selected % columns) + 24) else width / 2)
+                if (emojiChoices) dp(4 + 48 * (selected % columns) + 24)
+                else if (anchorSelected) dp(48 * selected + 24)
+                else width / 2)
                 .coerceIn(0, (frame.width - width).coerceAtLeast(0))
             topMargin = (keyPosition[1] - framePosition[1] - height - dp(5)).coerceAtLeast(0)
         }
@@ -2760,6 +2801,64 @@ class IceInputMethodService : InputMethodService() {
             }
         }
         popup.visibility = View.VISIBLE
+    }
+
+    private fun handleSymbolKeyTouch(view: View, event: MotionEvent, key: String,
+                                     choices: SymbolChoices): Boolean {
+        updateKeyPressed(view, event)
+        val slop = ViewConfiguration.get(this).scaledTouchSlop
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val token = generation
+                lateinit var gesture: NumberKeyGesture
+                val longPress = Runnable {
+                    if (!gesture.cancelled && token == generation && view.isAttachedToWindow) {
+                        gesture.held = true
+                        gesture.choice = choices.preferred
+                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        showChoicePopup(view, choices.values, gesture.choice, anchorSelected = true)
+                    }
+                }
+                gesture = NumberKeyGesture(event.rawX, event.rawY, longPress)
+                view.tag = gesture
+                view.postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
+            }
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val gesture = view.tag as? NumberKeyGesture ?: return true
+                val dx = event.rawX - gesture.startX
+                val dy = event.rawY - gesture.startY
+                if (!gesture.held && !gesture.cancelled && event.actionMasked != MotionEvent.ACTION_CANCEL) {
+                    if (dy < -dp(24) && abs(dy) > abs(dx)) {
+                        view.removeCallbacks(gesture.longPress)
+                        gesture.cancelled = true
+                        gesture.swipeAlternate = true
+                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        showChoicePopup(view, listOf(choices.values[choices.preferred]), 0)
+                    } else if ((abs(dx) > slop && abs(dx) > abs(dy)) || dy > slop) {
+                        view.removeCallbacks(gesture.longPress)
+                        gesture.cancelled = true
+                    }
+                }
+                if (gesture.held && event.actionMasked != MotionEvent.ACTION_CANCEL) {
+                    gesture.choice = (choices.preferred + (dx / dp(48)).roundToInt())
+                        .coerceIn(0, choices.values.lastIndex)
+                    updateHoldChoice(gesture.choice)
+                }
+                if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    view.removeCallbacks(gesture.longPress)
+                    view.tag = null
+                    holdPopup?.visibility = View.GONE
+                    if (event.actionMasked == MotionEvent.ACTION_UP) {
+                        when {
+                            gesture.swipeAlternate -> commitLiteral(choices.values[choices.preferred])
+                            gesture.held -> choices.values.getOrNull(gesture.choice)?.let(::commitLiteral)
+                            !gesture.cancelled -> handleKey(key)
+                        }
+                    }
+                }
+            }
+        }
+        return true
     }
 
     private fun handlePunctuationTouch(view: View, event: MotionEvent): Boolean {
