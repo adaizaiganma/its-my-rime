@@ -2298,6 +2298,7 @@ class IceInputMethodService : InputMethodService() {
                 else -> LETTER_SYMBOLS[letter]?.let(::punctuationText)
             }
             val punctuationKey = key == "PUNCT"
+            val characterKey = !special && !action && key != "SPACE"
             val symbolChoices = if (symbols) symbolChoices(key) else null
             val view = uiTextView().apply {
                 text = label
@@ -2310,7 +2311,9 @@ class IceInputMethodService : InputMethodService() {
                 gravity = Gravity.CENTER
                 setTextColor(if (action || shifted) palette.onAction else ink)
                 textSize = if (punctuationKey || key == "EMOJI") 21f else if (bottom || special) 14f else 21f
-                typeface = if (special || action) UiFonts.bodyTypeface(this@IceInputMethodService, mediumWeight = true) else UiFonts.bodyTypeface(this@IceInputMethodService)
+                typeface = if (characterKey) UiFonts.displayTypeface(this@IceInputMethodService)
+                    else UiFonts.bodyTypeface(this@IceInputMethodService, mediumWeight = special || action)
+                if (characterKey) includeFontPadding = false
                 if (alternate == null && symbolChoices == null && !punctuationKey) {
                     background = keyBackground(if (action || shifted) actionColor else if (special) specialSurface else keySurface)
                     elevation = 0f
@@ -2883,7 +2886,12 @@ class IceInputMethodService : InputMethodService() {
                         "GIF" -> 17f
                         else -> 19f
                     }
-                    typeface = if (emojiChoices) Typeface.DEFAULT else UiFonts.bodyTypeface(this@IceInputMethodService, mediumWeight = true)
+                    typeface = when {
+                        emojiChoices -> Typeface.DEFAULT
+                        value in setOf("GIF", "中", "En") -> UiFonts.bodyTypeface(this@IceInputMethodService, mediumWeight = true)
+                        else -> UiFonts.displayTypeface(this@IceInputMethodService)
+                    }
+                    if (!emojiChoices) includeFontPadding = false
                 }
                 row.addView(option, LinearLayout.LayoutParams(if (rows > 1) dp(48) else 0, -1,
                     if (rows > 1) 0f else 1f))
@@ -3201,6 +3209,7 @@ class IceInputMethodService : InputMethodService() {
         addView(uiTextView().apply {
             text = value
             textSize = 10f
+            typeface = UiFonts.displayTypeface(this@IceInputMethodService)
             includeFontPadding = false
             isSingleLine = true
             gravity = Gravity.TOP or Gravity.RIGHT

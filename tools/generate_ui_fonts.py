@@ -156,16 +156,21 @@ def main():
             static_font(source_paths["notosanstc"], weight),
             "Rime UI Sans", weight, fonts_dir / f"rime_sans_{style}.ttf",
         ))
-    settings_source = (ROOT / "app/src/main/java/com/kingzcheung/xime/MainActivity.kt").read_text(encoding="utf-8")
-    settings_source += (ROOT / "app/src/main/res/values/strings.xml").read_text(encoding="utf-8")
-    # Serif is only used by fixed headings. Input fields always use the full sans.
-    heading_characters = {ord(char) for char in settings_source if ord(char) >= 0x3000}
-    heading_characters.update(map(ord, "，。！？：；「」『』（）《》〈〉、"))
+    ui_source = "".join((ROOT / path).read_text(encoding="utf-8") for path in (
+        "app/src/main/java/com/kingzcheung/xime/MainActivity.kt",
+        "app/src/main/java/com/kingzcheung/xime/IceInputMethodService.kt",
+        "app/src/main/res/values/strings.xml",
+    ))
+    # Serif covers fixed headings, key labels, hints and character choice menus.
+    # Input fields and arbitrary candidates still use the complete sans fonts.
+    display_characters = {ord(char) for char in ui_source if ord(char) >= 0xA0}
+    # punctuationText creates full-width ASCII punctuation at runtime.
+    display_characters.update(range(0xFF01, 0xFF5F))
     print("Building display font…", flush=True)
     outputs.append(merge_pair(
         static_font(source_paths["cormorantgaramond"], 500),
         static_font(source_paths["notoseriftc"], 400),
-        "Rime UI Display", 400, fonts_dir / "rime_display_regular.ttf", heading_characters,
+        "Rime UI Display", 400, fonts_dir / "rime_display_regular.ttf", display_characters,
     ))
     metadata = {"google_fonts_revision": REVISION, "sources": source_records, "outputs": outputs}
     (notices_dir / "SOURCES.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

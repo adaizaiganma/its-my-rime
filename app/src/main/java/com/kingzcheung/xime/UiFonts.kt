@@ -37,6 +37,11 @@ internal object UiFonts {
 
     private var regular: Typeface? = null
     private var medium: Typeface? = null
+    private var displayFace: Typeface? = null
+
+    fun displayTypeface(context: Context): Typeface =
+        displayFace ?: requireNotNull(ResourcesCompat.getFont(context, R.font.rime_display_regular))
+            .also { displayFace = it }
 
     fun bodyTypeface(context: Context, mediumWeight: Boolean = false): Typeface {
         if (mediumWeight) {
