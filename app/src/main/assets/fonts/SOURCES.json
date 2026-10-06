@@ -1,0 +1,46 @@
+{
+  "google_fonts_revision": "7085eb89a950e85db5b166b7a58d414544b4140c",
+  "sources": [
+    {
+      "family": "cormorantgaramond",
+      "url": "https://raw.githubusercontent.com/google/fonts/7085eb89a950e85db5b166b7a58d414544b4140c/ofl/cormorantgaramond/CormorantGaramond%5Bwght%5D.ttf",
+      "sha256": "b20b7d9626dd956b2c5e558692ad328b1f19e3275e2782db4fa07670d83f35e0",
+      "license": "SIL OFL 1.1"
+    },
+    {
+      "family": "inter",
+      "url": "https://raw.githubusercontent.com/google/fonts/7085eb89a950e85db5b166b7a58d414544b4140c/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf",
+      "sha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031",
+      "license": "SIL OFL 1.1"
+    },
+    {
+      "family": "notosanstc",
+      "url": "https://raw.githubusercontent.com/google/fonts/7085eb89a950e85db5b166b7a58d414544b4140c/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf",
+      "sha256": "864727d210d54f2537bbe23b3a839436c3992af72de9322af5270897246bd44f",
+      "license": "SIL OFL 1.1"
+    },
+    {
+      "family": "notoseriftc",
+      "url": "https://raw.githubusercontent.com/google/fonts/7085eb89a950e85db5b166b7a58d414544b4140c/ofl/notoseriftc/NotoSerifTC%5Bwght%5D.ttf",
+      "sha256": "0077e18f57c6908f4a000969880940bdb0dad057c0e8d98b49dc364c3d1b09c6",
+      "license": "SIL OFL 1.1"
+    }
+  ],
+  "outputs": [
+    {
+      "file": "rime_sans_regular.ttf",
+      "sha256": "b6f91261b72d7bfcf0ee56942e871481b7f83f7bbb90726c9a8c53ec23ac874e",
+      "characters": 22915
+    },
+    {
+      "file": "rime_sans_medium.ttf",
+      "sha256": "3840f818e3316e481c7098250572cf358648c872f66536c745bb83611788ab20",
+      "characters": 22915
+    },
+    {
+      "file": "rime_display_regular.ttf",
+      "sha256": "ef59ebe795329c73aced2d56c506caa3ae239a8f66e17babe5c4a31c61989bc0",
+      "characters": 1121
+    }
+  ]
+}

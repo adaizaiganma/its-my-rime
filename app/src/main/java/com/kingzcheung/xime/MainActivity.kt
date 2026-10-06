@@ -70,6 +70,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -126,6 +127,7 @@ class MainActivity : ComponentActivity() {
                 onDispose { RimeManager.removeObserver(observer) }
             }
             MaterialTheme(
+                typography = UiFonts.typography,
                 colorScheme = if (darkMode) darkColorScheme(
                     primary = palette.accent, onPrimary = Color.White,
                     background = palette.page, surface = palette.card,
@@ -251,10 +253,10 @@ private fun SettingsScreen(
                 Box(
                     modifier = Modifier.size(40.dp).background(palette.soft, RoundedCornerShape(8.dp)),
                     contentAlignment = Alignment.Center
-                ) { Icon(Icons.Outlined.Keyboard, contentDescription = null, tint = palette.text,
-                    modifier = Modifier.size(22.dp)) }
+                ) { Icon(painterResource(R.drawable.ic_brand_mark), contentDescription = null, tint = palette.accent,
+                    modifier = Modifier.size(32.dp)) }
                 Column(Modifier.padding(start = 12.dp)) {
-                    Text(stringResource(R.string.app_name), fontSize = 24.sp, fontFamily = FontFamily.Serif,
+                    Text(stringResource(R.string.app_name), fontSize = 24.sp, fontFamily = UiFonts.display,
                         fontWeight = FontWeight.Normal, letterSpacing = (-0.3).sp, color = palette.text)
                     Text("Rime · 離線拼音輸入", fontSize = 12.sp, color = palette.muted)
                 }
@@ -262,7 +264,7 @@ private fun SettingsScreen(
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("每一次輸入，都更自在。", color = palette.text, fontSize = 28.sp,
-                    lineHeight = 34.sp, fontFamily = FontFamily.Serif,
+                    lineHeight = 34.sp, fontFamily = UiFonts.display,
                     letterSpacing = (-0.5).sp, fontWeight = FontWeight.Normal)
                 Text("在你的裝置上，整理自己的輸入習慣。",
                     color = palette.muted, fontSize = 14.sp, lineHeight = 21.sp)
@@ -383,7 +385,7 @@ private fun SettingsScreen(
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Icon(Icons.Outlined.Settings, contentDescription = null, tint = palette.heroDetail,
                                 modifier = Modifier.size(20.dp))
-                            Text("霧凇拼音", fontSize = 20.sp, fontFamily = FontFamily.Serif,
+                            Text(stringResource(R.string.brand_caption), fontSize = 20.sp, fontFamily = UiFonts.display,
                                 fontWeight = FontWeight.Normal, color = Color(UiTheme.dark.ink))
                         }
                         Spacer(Modifier.height(12.dp))
@@ -481,7 +483,7 @@ private fun SettingsScreen(
 @Composable
 private fun SettingsSection(title: String, palette: AppPalette, content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(title, color = palette.text, fontFamily = FontFamily.Serif,
+        Text(title, color = palette.text, fontFamily = UiFonts.display,
             fontWeight = FontWeight.Normal, fontSize = 22.sp, letterSpacing = (-0.3).sp)
         content()
     }
