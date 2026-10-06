@@ -21,7 +21,9 @@ object RimeManager {
     }
     private val main = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArraySet<(EngineStatus) -> Unit>()
-    private val engine = RimeEngine.getInstance()
+    // Loading librime is substantial work; initialize it on the owning worker,
+    // rather than when an Activity or the IME first accesses this object.
+    private val engine by lazy { RimeEngine.getInstance() }
 
     @Volatile var status = EngineStatus(false, true, "準備霧凇拼音…")
         private set
@@ -93,19 +95,21 @@ object RimeManager {
         }
     }
 
-    fun redeploy(context: Context) {
+    fun redeploy(context: Context, incremental: Boolean = false) {
         ensureReady(context)
+        val app = context.applicationContext
         worker.execute {
             try {
                 setStatus(false, true, "正在重新部署 Rime…")
-                QuickPhrases.syncRimeFile(context, File(context.filesDir, "rime-shared"),
-                    File(context.filesDir, "rime-user"))
-                check(engine.deploy()) { "重新部署失敗" }
+                QuickPhrases.syncRimeFile(app, File(app.filesDir, "rime-shared"),
+                    File(app.filesDir, "rime-user"))
+                val deployed = incremental && runCatching { engine.deployIncremental() }.getOrDefault(false)
+                check(deployed || engine.deploy()) { "重新部署失敗" }
                 check(engine.ensureSession()) { "Rime 無法建立輸入會話" }
                 check(engine.switchSchema(SCHEMA)) { "找不到霧凇拼音方案" }
                 engine.setOption("ascii_mode", false)
-                val version = context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toString()
-                File(context.filesDir, "rime-user/.deployed-version").writeText(version)
+                val version = app.packageManager.getPackageInfo(app.packageName, 0).longVersionCode.toString()
+                File(app.filesDir, "rime-user/.deployed-version").writeText(version)
                 setStatus(true, false, "重新部署完成")
             } catch (error: Throwable) {
                 Log.e(TAG, "Rime redeployment failed", error)

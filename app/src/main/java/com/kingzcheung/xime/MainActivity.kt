@@ -53,6 +53,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -171,7 +172,7 @@ class MainActivity : ComponentActivity() {
                                 QuickPhrase(normalizedCode, normalizedText)
                             QuickPhrases.save(this, updated)
                             quickPhrases = updated
-                            RimeManager.redeploy(this)
+                            RimeManager.redeploy(this, incremental = true)
                         }
                         error
                     },
@@ -179,7 +180,7 @@ class MainActivity : ComponentActivity() {
                         val updated = quickPhrases.filterNot { it.code == code }
                         QuickPhrases.save(this, updated)
                         quickPhrases = updated
-                        RimeManager.redeploy(this)
+                        RimeManager.redeploy(this, incremental = true)
                     }
                 )
             }
@@ -230,7 +231,6 @@ private fun SettingsScreen(
     onQuickPhraseSave: (String?, String, String) -> String?,
     onQuickPhraseDelete: (String) -> Unit
 ) {
-    var testText by rememberSaveable { mutableStateOf("") }
     var shortcutCode by rememberSaveable { mutableStateOf("") }
     var shortcutText by rememberSaveable { mutableStateOf("") }
     var editingShortcut by rememberSaveable { mutableStateOf<String?>(null) }
@@ -276,20 +276,7 @@ private fun SettingsScreen(
             }
 
             SettingsSection("試試手感", palette) {
-                Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                        Text("點擊下方輸入框，試著輸入 nihao。", fontSize = 13.sp, color = palette.muted)
-                        Spacer(Modifier.height(12.dp))
-                        OutlinedTextField(
-                            value = testText,
-                            onValueChange = { testText = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("在這裡試打文字…", color = palette.muted) },
-                            minLines = 2, maxLines = 5,
-                            shape = RoundedCornerShape(8.dp), colors = fieldColors
-                        )
-                    }
-                }
+                TypingTestCard(palette, fieldColors)
             }
 
             SettingsSection("常用字", palette) {
@@ -476,6 +463,25 @@ private fun SettingsScreen(
             }
             Text("Rime × 霧凇拼音", Modifier.fillMaxWidth().padding(bottom = 10.dp),
                 textAlign = TextAlign.Center, color = palette.muted, fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun TypingTestCard(palette: AppPalette, fieldColors: TextFieldColors) {
+    // A test keystroke invalidates this card, not the entire settings screen.
+    var testText by rememberSaveable { mutableStateOf("") }
+    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Text("點擊下方輸入框，試著輸入 nihao。", fontSize = 13.sp, color = palette.muted)
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = testText, onValueChange = { testText = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("在這裡試打文字…", color = palette.muted) },
+                minLines = 2, maxLines = 5,
+                shape = RoundedCornerShape(8.dp), colors = fieldColors
+            )
         }
     }
 }

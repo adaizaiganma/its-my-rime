@@ -18,6 +18,7 @@ import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.os.Handler
+import android.os.Process
 import android.os.Looper
 import android.os.SystemClock
 import android.text.SpannableStringBuilder
@@ -42,6 +43,7 @@ import android.widget.GridView
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
@@ -60,6 +62,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 private const val BACKSPACE = 0xff08
 private const val RETURN = 0xff0d
@@ -91,6 +97,19 @@ private data class KeyOutcome(
 )
 
 private data class SymbolChoices(val values: List<String>, val preferred: Int)
+
+private data class MygoCardViews(val card: LinearLayout, val preview: ImageView, val title: TextView)
+private data class MygoRowViews(val cards: List<MygoCardViews>)
+
+private data class KeyLayoutState(
+    val symbols: Boolean,
+    val shift: ShiftState,
+    val ascii: Boolean,
+    val fullWidth: Boolean,
+    val dark: Boolean,
+    val mediaEditing: Boolean,
+    val mediaTab: EmojiTab
+)
 
 class IceInputMethodService : InputMethodService() {
     private var darkMode = false
@@ -147,6 +166,9 @@ class IceInputMethodService : InputMethodService() {
     private var emojiTab = EmojiTab.EMOJI
     private var emojiCategory = -1
     private var emojiCategoryTransitioning = false
+    private val emojiGrids = mutableMapOf<Int, GridView>()
+    private var emojiReadyCallbackPending = false
+    private var serviceDestroyed = false
     private var emojiVariantPage: EmojiVariantChoices? = null
     private var emojiReturnPosition = 0
     private var mediaQueryEditing = false
@@ -160,10 +182,19 @@ class IceInputMethodService : InputMethodService() {
     private var mygoHasNext = false
     private var mygoLoading = false
     private var mygoError: String? = null
-    private var mygoRequest = 0
-    private var mygoScrollY = 0
-    private var mygoResultsScroll: ScrollView? = null
-    private val mygoExecutor = Executors.newFixedThreadPool(4)
+    @Volatile private var mygoRequest = 0
+    private var mygoScrollPosition = 0
+    private var mygoScrollOffset = 0
+    private var mygoResultsScroll: ListView? = null
+    private val mediaThreadFactory = ThreadFactory { task ->
+        Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            task.run()
+        }, "ime-media").apply { isDaemon = true }
+    }
+    private val mygoExecutor = Executors.newFixedThreadPool(2, mediaThreadFactory)
+    private val thumbnailExecutor = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue<Runnable>(48), mediaThreadFactory, ThreadPoolExecutor.DiscardOldestPolicy())
     private val mainHandler = Handler(Looper.getMainLooper())
     private var expandRequest = 0
     private var latestState: RimeProcessResult? = null
@@ -180,7 +211,7 @@ class IceInputMethodService : InputMethodService() {
     private var clearedText: String? = null
     private var clearUsedClipboard = false
     private var lastShiftTap = 0L
-    private var generation = 0
+    @Volatile private var generation = 0
     private val appearancePreferences by lazy {
         getSharedPreferences(AppearanceSettings.PREFS_NAME, MODE_PRIVATE)
     }
@@ -189,6 +220,7 @@ class IceInputMethodService : InputMethodService() {
     private var lastCapturedClipboardText: String? = null
     private var quickPasteEntry: ClipboardEntry? = null
     private var clipboardCaptureRequest = 0
+    @Volatile private var clipboardRenderRequest = 0
     private var lastCapturedClipboardUri: String? = null
     private var inputViewActive = false
     private val quickPasteExpiry = Runnable { updateQuickPasteSuggestion() }
@@ -214,19 +246,31 @@ class IceInputMethodService : InputMethodService() {
         captureClipboard()
         RimeManager.observe(statusObserver)
         RimeManager.ensureReady(this)
+        EmojiCatalog.prepare(this)
     }
 
     override fun onDestroy() {
+        serviceDestroyed = true
+        generation++
+        mygoRequest++
+        emojiOpen = false
         dismissPreeditPreview()
         mainHandler.removeCallbacks(quickPasteExpiry)
         appearancePreferences.unregisterOnSharedPreferenceChangeListener(appearanceListener)
         clipboardManager.removePrimaryClipChangedListener(clipboardListener)
         mygoExecutor.shutdownNow()
+        thumbnailExecutor.shutdownNow()
         RimeManager.removeObserver(statusObserver)
         super.onDestroy()
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        ThumbnailCache.trimMemory(level)
+    }
+
     override fun onCreateInputView(): View {
+        emojiGrids.clear()
         dismissPreeditPreview()
         darkMode = AppearanceSettings.isDark(this)
         window?.window?.let { imeWindow ->
@@ -473,9 +517,12 @@ class IceInputMethodService : InputMethodService() {
                 setTextColor(accent)
                 background = keyBackground(specialSurface)
                 onHapticClick {
-                    ClipboardHistory.clearRecent(this@IceInputMethodService)
                     dismissQuickPasteSuggestion()
-                    renderClipboardHistory()
+                    val app = applicationContext
+                    val clearedAt = System.currentTimeMillis()
+                    ClipboardHistory.runAsync({ ClipboardHistory.clearRecent(app, clearedAt) }) {
+                        if (!serviceDestroyed && clipboardOpen) renderClipboardHistory()
+                    }
                 }
             }
             addView(clipboardClearButton, LinearLayout.LayoutParams(dp(80), dp(40)))
@@ -895,10 +942,18 @@ class IceInputMethodService : InputMethodService() {
             }
             lastCapturedClipboardText = text
             lastCapturedClipboardUri = null
-            val recorded = ClipboardHistory.record(this, text, copiedAt)
-            quickPasteEntry = if (recorded) ClipboardEntry(text = text, pinned = false, copiedAt = copiedAt) else null
+            quickPasteEntry = null
             updateQuickPasteSuggestion()
-            if (recorded && clipboardOpen) renderClipboardHistory()
+            val app = applicationContext
+            ClipboardHistory.runAsync({ ClipboardHistory.record(app, text, copiedAt) }) { result ->
+                if (serviceDestroyed) return@runAsync
+                val recorded = result.getOrDefault(false)
+                if (request == clipboardCaptureRequest && !secure) {
+                    quickPasteEntry = if (recorded) ClipboardEntry(text = text, pinned = false, copiedAt = copiedAt) else null
+                    updateQuickPasteSuggestion()
+                }
+                if (recorded && clipboardOpen) renderClipboardHistory()
+            }
             return
         }
         quickPasteEntry = null
@@ -906,14 +961,17 @@ class IceInputMethodService : InputMethodService() {
         if (uri == null) return
         lastCapturedClipboardText = null
         lastCapturedClipboardUri = uri.toString()
-        val mime = runCatching { contentResolver.getType(uri) }.getOrNull()?.takeIf { it.startsWith("image/") }
-            ?: (0 until clip.description.mimeTypeCount).map { clip.description.getMimeType(it) }
+        val declaredMime = (0 until clip.description.mimeTypeCount).map { clip.description.getMimeType(it) }
                 .firstOrNull { it.startsWith("image/") }
-        if (mime == null) return
         val label = clip.description.label?.toString().orEmpty().ifBlank { "圖片" }
-        mygoExecutor.execute {
-            val stored = runCatching { ClipboardHistory.recordImageUri(this, uri, mime, label, copiedAt) }.getOrNull()
-            if (stored != null) mainHandler.post {
+        val app = applicationContext
+        ClipboardHistory.runImageAsync({
+            val mime = runCatching { app.contentResolver.getType(uri) }.getOrNull()?.takeIf { it.startsWith("image/") }
+                ?: declaredMime ?: return@runImageAsync null
+            ClipboardHistory.recordImageUri(app, uri, mime, label, copiedAt)
+        }) { result ->
+            val stored = result.getOrNull()
+            if (stored != null && !serviceDestroyed) {
                 if (request == clipboardCaptureRequest && !secure) {
                     quickPasteEntry = stored
                     updateQuickPasteSuggestion()
@@ -1083,7 +1141,7 @@ class IceInputMethodService : InputMethodService() {
             renderCandidates(state)
             return
         }
-        currentInputConnection?.let { connection ->
+        if (editorComposing || state.committedText.isNotEmpty()) currentInputConnection?.let { connection ->
             connection.beginBatchEdit()
             try {
                 if (editorComposing) {
@@ -1151,7 +1209,12 @@ class IceInputMethodService : InputMethodService() {
         while (charOffset < cursorSource.length) {
             val codePoint = cursorSource.codePointAt(charOffset)
             val chars = Character.charCount(codePoint)
-            val bytes = String(Character.toChars(codePoint)).toByteArray(Charsets.UTF_8).size
+            val bytes = when {
+                codePoint < 0x80 || codePoint in 0xD800..0xDFFF -> 1
+                codePoint < 0x800 -> 2
+                codePoint < 0x10000 -> 3
+                else -> 4
+            }
             if (byteOffset + bytes > byteLimit) break
             byteOffset += bytes
             charOffset += chars
@@ -1222,8 +1285,8 @@ class IceInputMethodService : InputMethodService() {
         val showCandidates = state != null && state.candidates.isNotEmpty() && (!secure || mediaQueryEditing)
         emojiToolbar?.visibility = if (emojiOpen && !(mediaQueryEditing && showCandidates)) View.VISIBLE else View.GONE
         val strip = candidateRow ?: return
-        strip.removeAllViews()
         if (!showCandidates) {
+            for (index in 0 until strip.childCount) strip.getChildAt(index).visibility = View.GONE
             closeExpandedCandidates()
             emptyToolbar?.visibility = if (emojiOpen) View.GONE else View.VISIBLE
             candidateBar?.visibility = View.GONE
@@ -1237,10 +1300,11 @@ class IceInputMethodService : InputMethodService() {
         closeClipboardPanel()
         emptyToolbar?.visibility = View.GONE
         candidateBar?.visibility = if (!emojiOpen || mediaQueryEditing) View.VISIBLE else View.GONE
-        state.candidates.take(9).forEachIndexed { index, candidate ->
-            val text = uiTextView().apply {
-                this.text = candidate.text
-                contentDescription = "候選詞 ${index + 1}：${candidate.text}"
+        var changed = false
+        val count = minOf(9, state.candidates.size)
+        for (index in 0 until count) {
+            val candidate = state.candidates[index]
+            val text = (strip.getChildAt(index) as? TextView) ?: uiTextView().apply {
                 setTextColor(candidateInk)
                 textSize = 19f
                 typeface = UiFonts.bodyTypeface(this@IceInputMethodService, mediumWeight = true)
@@ -1249,15 +1313,25 @@ class IceInputMethodService : InputMethodService() {
                 setPadding(dp(12), 0, dp(12), 0)
                 includeFontPadding = false
                 onHapticClick { selectCandidate(index) }
+            }.also { cell ->
+                strip.addView(cell, LinearLayout.LayoutParams(-2, dp(40)).apply {
+                    rightMargin = dp(8)
+                })
             }
-            val params = LinearLayout.LayoutParams(-2, dp(40)).apply {
-                rightMargin = dp(8)
+            if (!TextUtils.equals(text.text, candidate.text) || text.visibility != View.VISIBLE) {
+                text.text = candidate.text
+                text.contentDescription = "候選詞 ${index + 1}：${candidate.text}"
+                text.visibility = View.VISIBLE
+                changed = true
             }
-            strip.addView(text, params)
+        }
+        for (index in count until strip.childCount) {
+            if (strip.getChildAt(index).visibility != View.GONE) changed = true
+            strip.getChildAt(index).visibility = View.GONE
         }
         moreButton?.setImageResource(if (expanded) R.drawable.ic_candidates_collapse else R.drawable.ic_candidates_expand)
         moreButton?.contentDescription = if (expanded) "收起候選詞清單" else "展開所有候選詞"
-        candidateScroll?.smoothScrollTo(0, 0)
+        if (changed) candidateScroll?.scrollTo(0, 0)
     }
 
     private fun toggleExpandedCandidates() {
@@ -1320,7 +1394,9 @@ class IceInputMethodService : InputMethodService() {
     }
 
     private fun closeClipboardPanel() {
+        if (!clipboardOpen) return
         clipboardOpen = false
+        clipboardRenderRequest++
         updateQuickPasteSuggestion()
         clipboardPanel?.visibility = View.GONE
         updatePreeditPreview(latestState)
@@ -1363,7 +1439,9 @@ class IceInputMethodService : InputMethodService() {
             mygoHasNext = false
             mygoLoading = false
             mygoError = null
-            mygoScrollY = 0
+            mygoScrollPosition = 0
+            mygoScrollOffset = 0
+            mygoResultsScroll = null
         } else gifQuery = ""
         mediaPreedit = ""
         emojiOpen = true
@@ -1402,7 +1480,10 @@ class IceInputMethodService : InputMethodService() {
 
     private fun renderEmojiPage() {
         val body = emojiBody ?: return
-        if (emojiTab == EmojiTab.MYGO) mygoResultsScroll?.let { mygoScrollY = it.scrollY }
+        if (emojiTab == EmojiTab.MYGO) mygoResultsScroll?.let {
+            mygoScrollPosition = it.firstVisiblePosition
+            mygoScrollOffset = (it.getChildAt(0)?.top ?: it.paddingTop) - it.paddingTop
+        }
         mygoResultsScroll = null
         body.removeAllViews()
         emojiBackButton?.apply {
@@ -1412,6 +1493,18 @@ class IceInputMethodService : InputMethodService() {
         emojiCategoryScroll?.visibility = if (categoriesVisible) View.VISIBLE else View.GONE
         emojiTitle?.visibility = if (categoriesVisible) View.GONE else View.VISIBLE
         mediaSearchButton?.visibility = View.GONE
+        if (emojiTab == EmojiTab.EMOJI && !EmojiCatalog.isReady()) {
+            showMediaToolbarTitle("表情符號")
+            body.addView(mygoStatus("正在載入表情符號…"), LinearLayout.LayoutParams(-1, 0, 1f))
+            if (!emojiReadyCallbackPending) {
+                emojiReadyCallbackPending = true
+                EmojiCatalog.prepare(this) {
+                    emojiReadyCallbackPending = false
+                    if (!serviceDestroyed && emojiOpen && emojiTab == EmojiTab.EMOJI) renderEmojiPage()
+                }
+            }
+            return
+        }
         if (categoriesVisible) renderEmojiCategories()
         val title = when (emojiTab) {
             EmojiTab.EMOJI -> emojiVariantPage?.let { "選擇外觀 · ${it.choices.size}" } ?: "表情符號"
@@ -1432,14 +1525,20 @@ class IceInputMethodService : InputMethodService() {
     private fun renderEmojiGrid(body: LinearLayout) {
         emojiVariantPage?.let { renderEmojiVariantPage(body, it); return }
         val categories = EmojiCatalog.categories(this)
+        emojiCategory = emojiCategory.coerceIn(-1, categories.lastIndex)
         fun emojiAt(index: Int): List<String> = if (index == -1) {
             EmojiCatalog.recent(this).ifEmpty { categories.first().emoji.take(32) }
         } else categories[index].emoji
-        val previous = if (emojiCategory > -1) createEmojiGrid(emojiAt(emojiCategory - 1)) else null
-        val current = createEmojiGrid(emojiAt(emojiCategory))
+        fun gridAt(index: Int): GridView = emojiGrids.getOrPut(index) { createEmojiGrid(emojiAt(index)) }.also {
+            (it.parent as? android.view.ViewGroup)?.removeView(it)
+        }
+        val previous = if (emojiCategory > -1) gridAt(emojiCategory - 1) else null
+        val current = gridAt(emojiCategory)
         val following = if (emojiCategory < categories.lastIndex) {
-            createEmojiGrid(emojiAt(emojiCategory + 1))
+            gridAt(emojiCategory + 1)
         } else null
+        // Retain only the visible page and its neighbours, including their recycled cells.
+        emojiGrids.keys.retainAll(setOf(emojiCategory - 1, emojiCategory, emojiCategory + 1))
         body.addView(EmojiCategoryPager(emojiCategory, previous, current, following),
             LinearLayout.LayoutParams(-1, 0, 1f))
         val category = emojiCategory
@@ -1655,7 +1754,6 @@ class IceInputMethodService : InputMethodService() {
 
     private fun renderEmojiCategories() {
         val categoryScroll = emojiCategoryScroll ?: return
-        categoryScroll.removeAllViews()
         val icons = mapOf(
             "表情" to R.drawable.ic_emoji_smile,
             "人物" to R.drawable.ic_emoji_person,
@@ -1681,15 +1779,13 @@ class IceInputMethodService : InputMethodService() {
         )
         val categories = listOf("最近" to R.drawable.ic_emoji_history) +
             EmojiCatalog.categories(this).map { it.name to (icons[it.name] ?: R.drawable.ic_emoji_smile) }
-        val categoryRow = LinearLayout(this).apply {
+        val categoryRow = (categoryScroll.getChildAt(0) as? LinearLayout)?.takeIf {
+            it.childCount == categories.size
+        } ?: LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), 0, dp(4), 0)
-        }
-        categories.forEachIndexed { index, (name, icon) ->
-                val selected = emojiCategory == index - 1
-                categoryRow.addView(ImageView(this).apply {
-                    setImageResource(if (selected) filledIcons[name] ?: icon else icon)
-                    imageTintList = ColorStateList.valueOf(if (selected) candidateInk else muted)
+            categories.forEachIndexed { index, (name, _) ->
+                addView(ImageView(this@IceInputMethodService).apply {
                     scaleType = ImageView.ScaleType.CENTER_INSIDE
                     setPadding(dp(8), dp(8), dp(8), dp(8))
                     background = keyBackground(Color.TRANSPARENT)
@@ -1699,7 +1795,18 @@ class IceInputMethodService : InputMethodService() {
                     }
                 }, LinearLayout.LayoutParams(dp(40), dp(40)))
             }
-        categoryScroll.addView(categoryRow)
+            categoryScroll.removeAllViews()
+            categoryScroll.addView(this)
+        }
+        categories.forEachIndexed { index, (name, icon) ->
+            val selected = emojiCategory == index - 1
+            val view = categoryRow.getChildAt(index) as ImageView
+            if (view.tag != selected) {
+                view.setImageResource(if (selected) filledIcons[name] ?: icon else icon)
+                view.imageTintList = ColorStateList.valueOf(if (selected) candidateInk else muted)
+                view.tag = selected
+            }
+        }
         categoryScroll.post {
             val selectedCenter = (emojiCategory + 1) * dp(40) + dp(24)
             categoryScroll.scrollTo((selectedCenter - categoryScroll.width / 2).coerceAtLeast(0), 0)
@@ -1738,6 +1845,7 @@ class IceInputMethodService : InputMethodService() {
 
     private fun commitEmoji(symbol: String) {
         EmojiCatalog.remember(this, symbol)
+        emojiGrids.remove(-1)
         commitLiteral(symbol)
         if (emojiVariantPage != null) {
             emojiVariantPage = null
@@ -1823,52 +1931,16 @@ class IceInputMethodService : InputMethodService() {
     }
 
     private fun renderMygoPage(body: LinearLayout) {
-        val content = LinearLayout(this).apply {
+        val footer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(4), 0, dp(4), dp(4))
         }
         if (mygoResults.isEmpty() && !mygoLoading && mygoError == null && mygoPage > 0) {
-            content.addView(mygoStatus("找不到相關梗圖"), LinearLayout.LayoutParams(-1, dp(86)))
+            footer.addView(mygoStatus("找不到相關梗圖"), LinearLayout.LayoutParams(-1, dp(86)))
         }
-        mygoResults.chunked(2).forEach { pair ->
-            val row = LinearLayout(this)
-            pair.forEach { image ->
-                val card = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(dp(4), dp(4), dp(4), dp(4))
-                    background = candidateBackground(12)
-                    contentDescription = "插入梗圖：${image.alt}"
-                    onHapticClick { insertMygoImage(image) }
-                }
-                val preview = ImageView(this).apply {
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    background = rounded(specialSurface, 8)
-                    clipToOutline = true
-                    tag = image.id
-                }
-                card.addView(preview, LinearLayout.LayoutParams(-1, dp(72)))
-                card.addView(uiTextView().apply {
-                    text = image.alt.ifBlank { "MyGO 梗圖" }
-                    setTextColor(ink)
-                    textSize = 12f
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(4), 0, dp(4), 0)
-                }, LinearLayout.LayoutParams(-1, dp(24)))
-                row.addView(card, LinearLayout.LayoutParams(0, dp(104), 1f).apply {
-                    setMargins(dp(4), dp(4), dp(4), dp(4))
-                })
-                loadMygoThumbnail(image, preview)
-            }
-            if (pair.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, dp(104), 1f).apply {
-                setMargins(dp(4), dp(4), dp(4), dp(4))
-            })
-            content.addView(row)
-        }
-        if (mygoLoading) content.addView(mygoStatus("正在載入梗圖…"), LinearLayout.LayoutParams(-1, dp(58)))
+        if (mygoLoading) footer.addView(mygoStatus("正在載入梗圖…"), LinearLayout.LayoutParams(-1, dp(58)))
         mygoError?.let { error ->
-            content.addView(uiTextView().apply {
+            footer.addView(uiTextView().apply {
                 text = "$error · 點此重試"
                 setTextColor(accent)
                 textSize = 13f
@@ -1878,7 +1950,7 @@ class IceInputMethodService : InputMethodService() {
             }, LinearLayout.LayoutParams(-1, dp(50)))
         }
         if (mygoHasNext && !mygoLoading && mygoError == null) {
-            content.addView(uiTextView().apply {
+            footer.addView(uiTextView().apply {
                 text = "載入更多"
                 setTextColor(accent)
                 textSize = 13f
@@ -1890,19 +1962,71 @@ class IceInputMethodService : InputMethodService() {
                 setMargins(dp(4), dp(8), dp(4), dp(4))
             })
         }
-        content.addView(uiTextView().apply {
+        footer.addView(uiTextView().apply {
             text = "圖片來源：MyGO-Searcher · miyago9267"
             setTextColor(muted)
             textSize = 10f
             gravity = Gravity.CENTER
         }, LinearLayout.LayoutParams(-1, dp(30)))
-        val scroll = ScrollView(this).apply {
+        val scroll = ListView(this).apply {
             isVerticalScrollBarEnabled = false
-            addView(content)
+            divider = null
+            cacheColorHint = Color.TRANSPARENT
+            setPadding(dp(4), 0, dp(4), 0)
+            addFooterView(footer, null, false)
+            adapter = object : BaseAdapter() {
+                override fun getCount() = (mygoResults.size + 1) / 2
+                override fun getItem(position: Int) = mygoResults[position * 2]
+                override fun getItemId(position: Int) = position.toLong()
+                override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                    val row = (convertView as? LinearLayout) ?: LinearLayout(this@IceInputMethodService).apply {
+                        tag = MygoRowViews(List(2) {
+                            val card = LinearLayout(this@IceInputMethodService).apply {
+                                orientation = LinearLayout.VERTICAL
+                                setPadding(dp(4), dp(4), dp(4), dp(4))
+                                background = candidateBackground(12)
+                                onHapticClick { (tag as? MyGoImage)?.let(::insertMygoImage) }
+                            }
+                            val preview = ImageView(this@IceInputMethodService).apply {
+                                scaleType = ImageView.ScaleType.CENTER_CROP
+                                background = rounded(specialSurface, 8)
+                                clipToOutline = true
+                            }
+                            val title = uiTextView().apply {
+                                setTextColor(ink)
+                                textSize = 12f
+                                maxLines = 1
+                                ellipsize = TextUtils.TruncateAt.END
+                                gravity = Gravity.CENTER_VERTICAL
+                                setPadding(dp(4), 0, dp(4), 0)
+                            }
+                            card.addView(preview, LinearLayout.LayoutParams(-1, dp(72)))
+                            card.addView(title, LinearLayout.LayoutParams(-1, dp(24)))
+                            addView(card, LinearLayout.LayoutParams(0, dp(104), 1f).apply {
+                                setMargins(dp(4), dp(4), dp(4), dp(4))
+                            })
+                            MygoCardViews(card, preview, title)
+                        })
+                    }
+                    (row.tag as MygoRowViews).cards.forEachIndexed { index, views ->
+                        val image = mygoResults.getOrNull(position * 2 + index)
+                        views.card.visibility = if (image == null) View.INVISIBLE else View.VISIBLE
+                        if (views.card.tag != image) {
+                            views.card.tag = image
+                            views.preview.tag = image?.url
+                            views.preview.setImageDrawable(null)
+                            views.title.text = image?.alt?.ifBlank { "MyGO 梗圖" }
+                            views.card.contentDescription = image?.let { "插入梗圖：${it.alt}" }
+                        }
+                        if (image != null && views.preview.drawable == null) loadMygoThumbnail(image, views.preview)
+                    }
+                    return row
+                }
+            }
         }
         mygoResultsScroll = scroll
         body.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        scroll.post { scroll.scrollTo(0, mygoScrollY) }
+        scroll.post { scroll.setSelectionFromTop(mygoScrollPosition, mygoScrollOffset) }
     }
 
     private fun mygoStatus(message: String) = uiTextView().apply {
@@ -1918,7 +2042,8 @@ class IceInputMethodService : InputMethodService() {
             mygoResults.clear()
             mygoPage = 0
             mygoHasNext = false
-            mygoScrollY = 0
+            mygoScrollPosition = 0
+            mygoScrollOffset = 0
             mygoResultsScroll = null
         }
         val page = mygoPage + 1
@@ -1929,6 +2054,7 @@ class IceInputMethodService : InputMethodService() {
         mygoError = null
         if (emojiOpen && emojiTab == EmojiTab.MYGO && !mediaQueryEditing) renderEmojiPage()
         mygoExecutor.execute {
+            if (request != mygoRequest) return@execute
             val result = runCatching { MyGoApi.page(query, page) }
             mainHandler.post {
                 if (request != mygoRequest || token != generation) return@post
@@ -1946,13 +2072,16 @@ class IceInputMethodService : InputMethodService() {
     }
 
     private fun loadMygoThumbnail(image: MyGoImage, preview: ImageView) {
+        val key = "mygo:${image.url}"
+        ThumbnailCache.get(key)?.let { preview.setImageBitmap(it); return }
         val request = mygoRequest
-        mygoExecutor.execute {
+        val app = applicationContext
+        thumbnailExecutor.execute {
             if (request != mygoRequest) return@execute
-            val bitmap = runCatching { MyGoApi.thumbnail(MyGoApi.cachedImage(this, image)) }.getOrNull()
+            val bitmap = runCatching { ThumbnailCache.load(key) { MyGoApi.cachedImage(app, image) } }.getOrNull()
             mainHandler.post {
                 if (bitmap != null && request == mygoRequest && emojiOpen && emojiTab == EmojiTab.MYGO &&
-                    preview.isAttachedToWindow && preview.tag == image.id) preview.setImageBitmap(bitmap)
+                    preview.isAttachedToWindow && preview.tag == image.url) preview.setImageBitmap(bitmap)
             }
         }
     }
@@ -2099,8 +2228,18 @@ class IceInputMethodService : InputMethodService() {
 
     private fun renderClipboardHistory() {
         val list = clipboardList ?: return
+        val request = ++clipboardRenderRequest
+        val token = generation
+        val app = applicationContext
+        ClipboardHistory.runAsync({ ClipboardHistory.entries(app) }) { result ->
+            if (serviceDestroyed || !clipboardOpen || request != clipboardRenderRequest ||
+                token != generation || list !== clipboardList) return@runAsync
+            bindClipboardHistory(list, result.getOrDefault(emptyList()))
+        }
+    }
+
+    private fun bindClipboardHistory(list: LinearLayout, allEntries: List<ClipboardEntry>) {
         list.removeAllViews()
-        val allEntries = ClipboardHistory.entries(this)
         val recentCount = allEntries.count { !it.pinned }
         val pinnedCount = allEntries.size - recentCount
         clipboardRecentTab?.apply {
@@ -2143,8 +2282,10 @@ class IceInputMethodService : InputMethodService() {
                 }
                 setOnLongClickListener {
                     performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                    ClipboardHistory.togglePinned(this@IceInputMethodService, entry.id)
-                    renderClipboardHistory()
+                    val app = applicationContext
+                    ClipboardHistory.runAsync({ ClipboardHistory.togglePinned(app, entry.id) }) {
+                        if (!serviceDestroyed && clipboardOpen) renderClipboardHistory()
+                    }
                     true
                 }
             }
@@ -2156,14 +2297,29 @@ class IceInputMethodService : InputMethodService() {
                     contentDescription = entry.label ?: "圖片"
                 }
                 cell.addView(preview, LinearLayout.LayoutParams(dp(64), dp(48)).apply { rightMargin = dp(12) })
-                val file = ClipboardHistory.imageFile(this, entry)
-                if (file != null) mygoExecutor.execute {
-                    val bitmap = runCatching { MyGoApi.thumbnail(file) }.getOrNull()
-                    if (bitmap != null) mainHandler.post { preview.setImageBitmap(bitmap) }
+                val key = "clipboard:${entry.imageFileName}"
+                val cached = ThumbnailCache.get(key)
+                if (cached != null) preview.setImageBitmap(cached)
+                else {
+                    val token = generation
+                    val request = clipboardRenderRequest
+                    val app = applicationContext
+                    thumbnailExecutor.execute {
+                        if (token != generation || request != clipboardRenderRequest) return@execute
+                        val bitmap = runCatching {
+                            ThumbnailCache.load(key) { ClipboardHistory.imageFile(app, entry) }
+                        }.getOrNull()
+                        if (bitmap != null) mainHandler.post {
+                            if (token == generation && request == clipboardRenderRequest &&
+                                clipboardOpen && preview.isAttachedToWindow) preview.setImageBitmap(bitmap)
+                        }
+                    }
                 }
             }
             cell.addView(uiTextView().apply {
-                text = entry.text?.replace("\n", " ↵ ") ?: entry.label ?: "圖片"
+                text = entry.text?.let { value ->
+                    value.take(240).replace("\n", " ↵ ") + if (value.length > 240) "…" else ""
+                } ?: entry.label ?: "圖片"
                 setTextColor(ink)
                 textSize = 15f
                 maxLines = 2
@@ -2228,8 +2384,12 @@ class IceInputMethodService : InputMethodService() {
 
     private fun renderKeys() {
         val container = rows ?: return
-        container.removeAllViews()
         updatePunctuationWidthButton()
+        val layout = KeyLayoutState(symbols, shiftState, ascii, fullWidthPunctuation,
+            darkMode, mediaQueryEditing, mediaQueryTab)
+        if (container.tag == layout) return
+        container.tag = layout
+        container.removeAllViews()
         if (symbols) {
             addRow(listOf("1","2","3","4","5","6","7","8","9","0"))
             addRow(listOf("@","#","$","%","&","-","+","(",")"))

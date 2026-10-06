@@ -2,7 +2,11 @@ package com.kingzcheung.xime
 
 import android.content.Context
 import android.graphics.Paint
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
 import org.json.JSONArray
+import java.util.concurrent.Executors
 
 data class EmojiCategory(val name: String, val icon: String, val emoji: List<String>)
 data class EmojiVariantChoices(val base: String, val choices: List<String>)
@@ -21,6 +25,40 @@ object EmojiCatalog {
     )
 
     @Volatile private var cachedData: CatalogData? = null
+    private val main = Handler(Looper.getMainLooper())
+    private val loader = Executors.newSingleThreadExecutor { task ->
+        Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            task.run()
+        }, "emoji-catalog").apply { isDaemon = true }
+    }
+    private var loading = false
+    private val readyCallbacks = mutableListOf<() -> Unit>()
+
+    fun isReady(): Boolean = cachedData != null
+
+    /** Asset parsing and thousands of hasGlyph calls must not block a UI frame. */
+    fun prepare(context: Context, onReady: (() -> Unit)? = null) {
+        val app = context.applicationContext
+        synchronized(this) {
+            if (cachedData != null) {
+                onReady?.let { callback -> main.post { callback() } }
+                return
+            }
+            onReady?.let(readyCallbacks::add)
+            if (loading) return
+            loading = true
+        }
+        loader.execute {
+            val loaded = load(app)
+            val callbacks = synchronized(this) {
+                cachedData = loaded
+                loading = false
+                readyCallbacks.toList().also { readyCallbacks.clear() }
+            }
+            callbacks.forEach { callback -> main.post { callback() } }
+        }
+    }
 
     private fun data(context: Context): CatalogData = cachedData ?: synchronized(this) {
         cachedData ?: load(context.applicationContext).also { cachedData = it }
