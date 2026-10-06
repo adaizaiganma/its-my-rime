@@ -2091,6 +2091,16 @@ class IceInputMethodService : InputMethodService() {
         if (shiftState == ShiftState.OFF) letter.toString() else letter.uppercase()
 
     private fun symbolChoices(key: String): SymbolChoices? = when (key) {
+        "0" -> SymbolChoices(listOf("⁰", "₀"), 0)
+        "1" -> SymbolChoices(listOf("¹", "₁"), 0)
+        "2" -> SymbolChoices(listOf("²", "₂"), 0)
+        "3" -> SymbolChoices(listOf("³", "₃"), 0)
+        "4" -> SymbolChoices(listOf("⁴", "₄"), 0)
+        "5" -> SymbolChoices(listOf("⁵", "₅"), 0)
+        "6" -> SymbolChoices(listOf("⁶", "₆"), 0)
+        "7" -> SymbolChoices(listOf("⁷", "₇"), 0)
+        "8" -> SymbolChoices(listOf("⁸", "₈"), 0)
+        "9" -> SymbolChoices(listOf("⁹", "₉"), 0)
         "(" -> SymbolChoices(listOf(punctuationText("["), punctuationText("{"), "〈", "《", "【"), 3)
         ")" -> SymbolChoices(listOf(punctuationText("]"), punctuationText("}"), "〉", "】", "》"), 4)
         "-" -> SymbolChoices(listOf(punctuationText("_"), "–", punctuationText("~"),
@@ -2840,7 +2850,8 @@ class IceInputMethodService : InputMethodService() {
                     }
                 }
                 if (gesture.held && event.actionMasked != MotionEvent.ACTION_CANCEL) {
-                    gesture.choice = (choices.preferred + (dx / dp(48)).roundToInt())
+                    val step = if (key.length == 1 && key[0] in '0'..'9') dp(30) else dp(48)
+                    gesture.choice = (choices.preferred + (dx / step).roundToInt())
                         .coerceIn(0, choices.values.lastIndex)
                     updateHoldChoice(gesture.choice)
                 }
