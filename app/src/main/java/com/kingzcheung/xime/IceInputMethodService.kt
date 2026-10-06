@@ -50,6 +50,7 @@ import androidx.core.content.FileProvider
 import com.giphy.sdk.core.models.Media
 import com.giphy.sdk.ui.Giphy
 import com.giphy.sdk.ui.pagination.GPHContent
+import com.giphy.sdk.ui.themes.GPHCustomTheme
 import com.giphy.sdk.ui.themes.GPHTheme
 import com.giphy.sdk.ui.views.GPHGridCallback
 import com.giphy.sdk.ui.views.GiphyGridView
@@ -93,14 +94,15 @@ private data class SymbolChoices(val values: List<String>, val preferred: Int)
 
 class IceInputMethodService : InputMethodService() {
     private var darkMode = false
-    private val ink get() = if (darkMode) Color.rgb(232, 240, 252) else Color.rgb(28, 47, 74)
-    private val muted get() = if (darkMode) Color.rgb(166, 188, 216) else Color.rgb(105, 122, 146)
-    private val blue get() = if (darkMode) Color.rgb(145, 185, 250) else Color.rgb(48, 95, 166)
-    private val actionBlue get() = if (darkMode) Color.rgb(56, 107, 184) else blue
-    private val candidateBlue get() = if (darkMode) Color.rgb(207, 225, 255) else Color.rgb(31, 75, 137)
-    private val keyboardSurface get() = if (darkMode) Color.rgb(17, 29, 46) else Color.rgb(241, 245, 251)
-    private val keySurface get() = if (darkMode) Color.rgb(38, 57, 82) else Color.WHITE
-    private val specialSurface get() = if (darkMode) Color.rgb(47, 74, 108) else Color.rgb(222, 232, 248)
+    private val palette get() = UiTheme.palette(darkMode)
+    private val ink get() = palette.ink
+    private val muted get() = palette.muted
+    private val accent get() = if (darkMode) palette.accent else palette.action
+    private val actionColor get() = palette.action
+    private val candidateInk get() = ink
+    private val keyboardSurface get() = if (darkMode) palette.canvas else palette.surface
+    private val keySurface get() = palette.key
+    private val specialSurface get() = palette.inset
     private var root: LinearLayout? = null
     private var inputFrame: FrameLayout? = null
     private var topBar: FrameLayout? = null
@@ -227,6 +229,11 @@ class IceInputMethodService : InputMethodService() {
     override fun onCreateInputView(): View {
         dismissPreeditPreview()
         darkMode = AppearanceSettings.isDark(this)
+        window?.window?.let { imeWindow ->
+            imeWindow.navigationBarColor = keyboardSurface
+            androidx.core.view.WindowCompat.getInsetsController(imeWindow, imeWindow.decorView)
+                .isAppearanceLightNavigationBars = !darkMode
+        }
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(5), dp(8), dp(5), dp(8))
@@ -235,51 +242,57 @@ class IceInputMethodService : InputMethodService() {
         topBar = FrameLayout(this)
         emptyToolbar = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(9), 0, dp(9), 0)
+            setPadding(dp(8), 0, dp(8), 0)
         }
         caption = TextView(this).apply {
             text = if (RimeManager.status.ready) modeCaption() else RimeManager.status.message
             setTextColor(ink)
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            includeFontPadding = false
         }
         val toolbarLead = FrameLayout(this)
-        toolbarLead.addView(caption, FrameLayout.LayoutParams(-1, dp(36), Gravity.CENTER_VERTICAL))
+        toolbarLead.addView(caption, FrameLayout.LayoutParams(-1, dp(40), Gravity.CENTER_VERTICAL))
         quickPasteButton = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
             background = keyBackground(specialSurface)
             addView(ImageView(this@IceInputMethodService).apply {
                 setImageResource(R.drawable.ic_clipboard_history)
-                imageTintList = ColorStateList.valueOf(blue)
+                imageTintList = ColorStateList.valueOf(ink)
                 scaleType = ImageView.ScaleType.CENTER_INSIDE
                 setPadding(dp(4), dp(4), dp(4), dp(4))
             }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { leftMargin = dp(4) })
             quickPasteText = TextView(this@IceInputMethodService).apply {
                 setTextColor(ink)
                 textSize = 14f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                includeFontPadding = false
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
                 gravity = Gravity.CENTER_VERTICAL
             }
             addView(quickPasteText, LinearLayout.LayoutParams(0, -1, 1f))
-            addView(TextView(this@IceInputMethodService).apply {
-                text = "×"
+            addView(ImageView(this@IceInputMethodService).apply {
+                setImageResource(R.drawable.ic_close_outline)
                 contentDescription = "關閉快速貼上"
-                setTextColor(muted)
-                textSize = 20f
-                gravity = Gravity.CENTER
+                imageTintList = ColorStateList.valueOf(muted)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(dp(8), dp(8), dp(8), dp(8))
                 onHapticClick { dismissQuickPasteSuggestion() }
-            }, LinearLayout.LayoutParams(dp(29), -1))
+            }, LinearLayout.LayoutParams(dp(32), -1))
             onHapticClick { pasteQuickSuggestion() }
         }
-        toolbarLead.addView(quickPasteButton, FrameLayout.LayoutParams(-1, dp(36), Gravity.CENTER_VERTICAL))
-        emptyToolbar?.addView(toolbarLead, LinearLayout.LayoutParams(0, dp(40), 1f))
+        toolbarLead.addView(quickPasteButton, FrameLayout.LayoutParams(-1, dp(40), Gravity.CENTER_VERTICAL))
+        emptyToolbar?.addView(toolbarLead, LinearLayout.LayoutParams(0, dp(40), 1f).apply {
+            rightMargin = dp(8)
+        })
         clipboardButton = ImageView(this).apply {
             setImageResource(R.drawable.ic_clipboard_history)
-            imageTintList = ColorStateList.valueOf(blue)
+            imageTintList = ColorStateList.valueOf(ink)
             contentDescription = "開啟剪貼簿"
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -288,25 +301,25 @@ class IceInputMethodService : InputMethodService() {
             onHapticClick { toggleClipboardPanel() }
         }
         emptyToolbar?.addView(clipboardButton, LinearLayout.LayoutParams(dp(44), dp(40)).apply {
-            rightMargin = dp(5)
+            rightMargin = dp(4)
         })
         punctuationWidthButton = TextView(this).apply {
             gravity = Gravity.CENTER
             textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(blue)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(ink)
             background = keyBackground(specialSurface)
             onHapticClick { togglePunctuationWidth() }
         }
         updatePunctuationWidthButton()
         emptyToolbar?.addView(punctuationWidthButton, LinearLayout.LayoutParams(dp(44), dp(40)).apply {
-            rightMargin = dp(5)
+            rightMargin = dp(4)
         })
         traditionalButton = TextView(this).apply {
             gravity = Gravity.CENTER
             textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(blue)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(ink)
             background = keyBackground(specialSurface)
             onHapticClick { toggleTraditional() }
         }
@@ -327,28 +340,28 @@ class IceInputMethodService : InputMethodService() {
         }
         candidateRow = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), 0, dp(6), 0)
+            setPadding(dp(8), 0, dp(8), 0)
         }
         candidateScroll?.addView(candidateRow)
         candidateControls.addView(candidateScroll, LinearLayout.LayoutParams(0, dp(44), 1f))
         moreButton = ImageView(this).apply {
             setImageResource(R.drawable.ic_candidates_expand)
-            imageTintList = ColorStateList.valueOf(blue)
+            imageTintList = ColorStateList.valueOf(ink)
             contentDescription = "展開所有候選詞"
             scaleType = ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(9), dp(9), dp(9), dp(9))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             background = keyBackground(specialSurface)
             onHapticClick { toggleExpandedCandidates() }
         }
         candidateControls.addView(moreButton, LinearLayout.LayoutParams(dp(44), dp(40)).apply {
-            rightMargin = dp(9)
+            rightMargin = dp(8)
         })
         candidateBar?.addView(candidateControls, LinearLayout.LayoutParams(-1, dp(44)))
         topBar?.addView(candidateBar, FrameLayout.LayoutParams(-1, -1))
         emojiToolbar = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
-            setPadding(dp(9), 0, dp(9), 0)
+            setPadding(dp(8), 0, dp(8), 0)
         }
         emojiCategoryScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
@@ -357,9 +370,9 @@ class IceInputMethodService : InputMethodService() {
         emojiToolbar?.addView(emojiCategoryScroll, LinearLayout.LayoutParams(0, dp(40), 1f))
         emojiBackButton = ImageView(this).apply {
             setImageResource(R.drawable.ic_emoji_back)
-            imageTintList = ColorStateList.valueOf(blue)
+            imageTintList = ColorStateList.valueOf(ink)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             background = keyBackground(specialSurface)
             contentDescription = "返回字母鍵盤"
             onHapticClick {
@@ -373,42 +386,44 @@ class IceInputMethodService : InputMethodService() {
             text = "表情符號"
             setTextColor(ink)
             textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), 0, 0, 0)
+            setPadding(dp(8), 0, 0, 0)
+            includeFontPadding = false
         }
         emojiToolbar?.addView(emojiTitle, LinearLayout.LayoutParams(0, dp(40), 1f))
         mediaSearchButton = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
-            setPadding(dp(10), 0, dp(10), 0)
+            setPadding(dp(12), 0, dp(12), 0)
             background = keyBackground(keySurface)
             onHapticClick { enterMediaQueryEditing(emojiTab) }
         }
         mediaSearchButton?.addView(ImageView(this).apply {
             setImageResource(R.drawable.ic_search_outline)
-            imageTintList = ColorStateList.valueOf(blue)
+            imageTintList = ColorStateList.valueOf(muted)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
         }, LinearLayout.LayoutParams(dp(22), dp(22)))
         mediaSearchText = TextView(this).apply {
             textSize = 14f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(9), 0, 0, 0)
+            setPadding(dp(8), 0, 0, 0)
+            includeFontPadding = false
         }
         mediaSearchButton?.addView(mediaSearchText, LinearLayout.LayoutParams(0, -2, 1f))
         emojiToolbar?.addView(mediaSearchButton, LinearLayout.LayoutParams(0, dp(40), 1f).apply {
-            rightMargin = dp(5)
+            rightMargin = dp(8)
         })
         emojiToolbar?.addView(ImageView(this).apply {
             setImageResource(R.drawable.ic_delete_outline)
-            imageTintList = ColorStateList.valueOf(blue)
+            imageTintList = ColorStateList.valueOf(ink)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(9), dp(9), dp(9), dp(9))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             background = keyBackground(specialSurface)
             contentDescription = "刪除前一個字元"
             onHapticClick { handleKey("DEL") }
-        }, LinearLayout.LayoutParams(dp(44), dp(40)).apply { rightMargin = dp(5) })
+        }, LinearLayout.LayoutParams(dp(44), dp(40)).apply { rightMargin = dp(4) })
         emojiToolbar?.addView(emojiBackButton, LinearLayout.LayoutParams(dp(44), dp(40)))
         topBar?.addView(emojiToolbar, FrameLayout.LayoutParams(-1, -1))
         root?.addView(topBar, LinearLayout.LayoutParams(-1, dp(50)))
@@ -419,11 +434,11 @@ class IceInputMethodService : InputMethodService() {
         expandedPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            background = rounded(keyboardSurface, 16)
+            background = rounded(keyboardSurface, 12)
         }
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
-        expandedList = CandidateFlowLayout(this, dp(5), dp(5)).apply {
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+        expandedList = CandidateFlowLayout(this, dp(8), dp(8)).apply {
+            setPadding(dp(8), dp(8), dp(8), dp(8))
         }
         scroll.addView(expandedList, FrameLayout.LayoutParams(-1, -2))
         expandedPanel?.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -431,31 +446,31 @@ class IceInputMethodService : InputMethodService() {
         clipboardPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            background = rounded(keyboardSurface, 16)
+            background = rounded(keyboardSurface, 12)
         }
         clipboardPanel?.addView(LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(2), dp(8), dp(2))
+            setPadding(dp(12), 0, dp(8), 0)
             addView(TextView(this@IceInputMethodService).apply {
                 text = "剪貼簿"
                 setTextColor(ink)
                 textSize = 15f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 gravity = Gravity.CENTER_VERTICAL
-            }, LinearLayout.LayoutParams(-2, dp(30)))
+            }, LinearLayout.LayoutParams(-2, dp(40)))
             addView(TextView(this@IceInputMethodService).apply {
                 text = "長按收藏"
                 setTextColor(muted)
-                textSize = 11f
+                textSize = 12f
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), 0, 0, 0)
-            }, LinearLayout.LayoutParams(0, dp(30), 1f))
+                setPadding(dp(8), 0, 0, 0)
+            }, LinearLayout.LayoutParams(0, dp(40), 1f))
             clipboardClearButton = TextView(this@IceInputMethodService).apply {
                 text = "清空最近"
                 textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 gravity = Gravity.CENTER
-                setTextColor(blue)
+                setTextColor(accent)
                 background = keyBackground(specialSurface)
                 onHapticClick {
                     ClipboardHistory.clearRecent(this@IceInputMethodService)
@@ -463,11 +478,11 @@ class IceInputMethodService : InputMethodService() {
                     renderClipboardHistory()
                 }
             }
-            addView(clipboardClearButton, LinearLayout.LayoutParams(dp(78), dp(30)))
-        }, LinearLayout.LayoutParams(-1, dp(36)))
+            addView(clipboardClearButton, LinearLayout.LayoutParams(dp(80), dp(40)))
+        }, LinearLayout.LayoutParams(-1, dp(48)))
         val clipboardTabs = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), 0, dp(6), dp(4))
+            setPadding(dp(8), 0, dp(8), dp(4))
         }
         clipboardRecentTab = TextView(this).apply {
             gravity = Gravity.CENTER
@@ -487,16 +502,16 @@ class IceInputMethodService : InputMethodService() {
                 clipboardScroll?.scrollTo(0, 0)
             }
         }
-        clipboardTabs.addView(clipboardRecentTab, LinearLayout.LayoutParams(0, dp(34), 1f).apply {
-            rightMargin = dp(4)
+        clipboardTabs.addView(clipboardRecentTab, LinearLayout.LayoutParams(0, dp(40), 1f).apply {
+            rightMargin = dp(8)
         })
-        clipboardTabs.addView(clipboardPinnedTab, LinearLayout.LayoutParams(0, dp(34), 1f))
-        clipboardPanel?.addView(clipboardTabs, LinearLayout.LayoutParams(-1, dp(38)))
+        clipboardTabs.addView(clipboardPinnedTab, LinearLayout.LayoutParams(0, dp(40), 1f))
+        clipboardPanel?.addView(clipboardTabs, LinearLayout.LayoutParams(-1, dp(44)))
         val clipboardScrollView = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
         clipboardScroll = clipboardScrollView
         clipboardList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(6), 0, dp(6), dp(6))
+            setPadding(dp(8), dp(4), dp(8), dp(8))
         }
         clipboardScrollView.addView(clipboardList)
         clipboardPanel?.addView(clipboardScrollView, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -504,7 +519,7 @@ class IceInputMethodService : InputMethodService() {
         emojiPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            background = rounded(keyboardSurface, 16)
+            background = rounded(keyboardSurface, 12)
         }
         emojiBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         emojiPanel?.addView(emojiBody, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -516,27 +531,27 @@ class IceInputMethodService : InputMethodService() {
         holdPopup = LinearLayout(this).apply {
             gravity = Gravity.CENTER
             setPadding(dp(4), dp(4), dp(4), dp(4))
-            background = rounded(keySurface, 14)
-            elevation = dp(10).toFloat()
+            background = rounded(keySurface, 12).apply { setStroke(dp(1), palette.outline) }
+            elevation = dp(4).toFloat()
             visibility = View.GONE
         }
         inputFrame?.addView(holdPopup, FrameLayout.LayoutParams(dp(144), dp(52)))
         preeditPreview = TextView(this).apply {
             setTextColor(ink)
             textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER_VERTICAL
             includeFontPadding = false
             isSingleLine = true
-            setPadding(dp(9), 0, dp(9), 0)
+            setPadding(dp(8), 0, dp(8), 0)
         }
         preeditScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             addView(preeditPreview, FrameLayout.LayoutParams(-2, -1))
         }
         val previewSurface = FrameLayout(this).apply {
-            background = rounded(keySurface, 12)
-            elevation = dp(8).toFloat()
+            background = rounded(keySurface, 8).apply { setStroke(dp(1), palette.outline) }
+            elevation = dp(4).toFloat()
             addView(preeditScroll, FrameLayout.LayoutParams(-1, -1))
         }
         preeditPopup = PopupWindow(previewSurface, dp(48), dp(42), false).apply {
@@ -1169,7 +1184,7 @@ class IceInputMethodService : InputMethodService() {
         val cursor = preeditCursorIndex(state!!, preedit).coerceIn(0, preedit.length)
         val display = SpannableStringBuilder(preedit).apply {
             insert(cursor, "\u200b")
-            setSpan(PreeditCaretSpan(blue, dp(3), dp(2), dp(2)),
+            setSpan(PreeditCaretSpan(accent, dp(3), dp(2), dp(2)),
                 cursor, cursor + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         preview.text = display
@@ -1226,16 +1241,17 @@ class IceInputMethodService : InputMethodService() {
             val text = TextView(this).apply {
                 this.text = candidate.text
                 contentDescription = "候選詞 ${index + 1}：${candidate.text}"
-                setTextColor(candidateBlue)
+                setTextColor(candidateInk)
                 textSize = 19f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 gravity = Gravity.CENTER
                 background = keyBackground(Color.TRANSPARENT)
-                setPadding(dp(14), 0, dp(14), 0)
+                setPadding(dp(12), 0, dp(12), 0)
+                includeFontPadding = false
                 onHapticClick { selectCandidate(index) }
             }
             val params = LinearLayout.LayoutParams(-2, dp(40)).apply {
-                rightMargin = dp(7)
+                rightMargin = dp(8)
             }
             strip.addView(text, params)
         }
@@ -1296,8 +1312,8 @@ class IceInputMethodService : InputMethodService() {
         rows?.visibility = View.GONE
         clipboardPanel?.visibility = View.VISIBLE
         clipboardButton?.apply {
-            background = keyBackground(actionBlue)
-            imageTintList = ColorStateList.valueOf(Color.WHITE)
+            background = keyBackground(actionColor)
+            imageTintList = ColorStateList.valueOf(palette.onAction)
             contentDescription = "收起剪貼簿"
         }
         renderClipboardHistory()
@@ -1311,7 +1327,7 @@ class IceInputMethodService : InputMethodService() {
         rows?.visibility = if (expanded || (emojiOpen && !mediaQueryEditing)) View.GONE else View.VISIBLE
         clipboardButton?.apply {
             background = keyBackground(specialSurface)
-            imageTintList = ColorStateList.valueOf(blue)
+            imageTintList = ColorStateList.valueOf(ink)
             contentDescription = "開啟剪貼簿"
         }
     }
@@ -1440,7 +1456,7 @@ class IceInputMethodService : InputMethodService() {
             verticalSpacing = dp(4)
             isVerticalScrollBarEnabled = false
             clipToPadding = false
-            setPadding(dp(3), dp(2), dp(3), dp(4))
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             adapter = object : BaseAdapter() {
                 override fun getCount() = emoji.size
                 override fun getItem(position: Int) = emoji[position]
@@ -1450,7 +1466,7 @@ class IceInputMethodService : InputMethodService() {
                     val variants = EmojiCatalog.variants(this@IceInputMethodService, symbol)
                     val cell = (convertView as? FrameLayout) ?: FrameLayout(this@IceInputMethodService).apply {
                         background = keyBackground(Color.TRANSPARENT)
-                        layoutParams = AbsListView.LayoutParams(-1, dp(43))
+                        layoutParams = AbsListView.LayoutParams(-1, dp(44))
                         addView(TextView(this@IceInputMethodService).apply {
                             textSize = 26f
                             gravity = Gravity.CENTER
@@ -1458,7 +1474,7 @@ class IceInputMethodService : InputMethodService() {
                         addView(TextView(this@IceInputMethodService).apply {
                             text = "•"
                             textSize = 11f
-                            setTextColor(blue)
+                            setTextColor(accent)
                             gravity = Gravity.BOTTOM or Gravity.RIGHT
                             setPadding(0, 0, dp(4), dp(1))
                         }, FrameLayout.LayoutParams(-1, -1))
@@ -1673,7 +1689,7 @@ class IceInputMethodService : InputMethodService() {
                 val selected = emojiCategory == index - 1
                 categoryRow.addView(ImageView(this).apply {
                     setImageResource(if (selected) filledIcons[name] ?: icon else icon)
-                    imageTintList = ColorStateList.valueOf(if (selected) candidateBlue else muted)
+                    imageTintList = ColorStateList.valueOf(if (selected) candidateInk else muted)
                     scaleType = ImageView.ScaleType.CENTER_INSIDE
                     setPadding(dp(8), dp(8), dp(8), dp(8))
                     background = keyBackground(Color.TRANSPARENT)
@@ -1681,10 +1697,7 @@ class IceInputMethodService : InputMethodService() {
                     onHapticClick {
                         selectEmojiCategory(index - 1)
                     }
-                }, LinearLayout.LayoutParams(dp(36), dp(36)).apply {
-                    leftMargin = dp(2)
-                    rightMargin = dp(2)
-                })
+                }, LinearLayout.LayoutParams(dp(40), dp(40)))
             }
         categoryScroll.addView(categoryRow)
         categoryScroll.post {
@@ -1700,7 +1713,7 @@ class IceInputMethodService : InputMethodService() {
             verticalSpacing = dp(4)
             isVerticalScrollBarEnabled = false
             clipToPadding = false
-            setPadding(dp(3), dp(2), dp(3), dp(4))
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             adapter = object : BaseAdapter() {
                 override fun getCount() = group.choices.size
                 override fun getItem(position: Int) = group.choices[position]
@@ -1711,7 +1724,7 @@ class IceInputMethodService : InputMethodService() {
                         textSize = 26f
                         gravity = Gravity.CENTER
                         background = keyBackground(Color.TRANSPARENT)
-                        layoutParams = AbsListView.LayoutParams(-1, dp(42))
+                        layoutParams = AbsListView.LayoutParams(-1, dp(44))
                     }
                     cell.text = symbol
                     cell.contentDescription = "輸入 $symbol"
@@ -1734,18 +1747,27 @@ class IceInputMethodService : InputMethodService() {
 
     private fun renderGifPage(body: LinearLayout) {
         if (BuildConfig.GIPHY_SDK_KEY.isBlank() || !ensureGiphyConfigured()) {
-            body.addView(mygoStatus("GIF 服務無法啟動，請檢查 Android SDK 金鑰"),
+            body.addView(mygoStatus("GIF 目前無法使用，請稍後重試"),
                 LinearLayout.LayoutParams(-1, 0, 1f))
             return
         }
         val container = FrameLayout(this)
         val status = mygoStatus("正在載入 GIF…").apply { visibility = View.VISIBLE }
         var hasResults = false
+        GPHCustomTheme.apply {
+            if (darkMode) applyDarkThemeProps() else applyLightThemeProps()
+            backgroundColor = keyboardSurface
+            defaultTextColor = ink
+            usernameColor = muted
+            retryButtonBackgroundColor = specialSurface
+            retryButtonTextColor = accent
+        }
         val grid = GiphyGridView(this).apply {
             direction = GiphyGridView.VERTICAL
             spanCount = 2
             cellPadding = dp(4)
-            theme = if (darkMode) GPHTheme.Dark else GPHTheme.Light
+            theme = GPHTheme.Custom
+            setBackgroundColor(keyboardSurface)
             callback = object : GPHGridCallback {
                 override fun contentDidUpdate(resultCount: Int) {
                     mainHandler.post {
@@ -1803,7 +1825,7 @@ class IceInputMethodService : InputMethodService() {
     private fun renderMygoPage(body: LinearLayout) {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(5), 0, dp(5), dp(4))
+            setPadding(dp(4), 0, dp(4), dp(4))
         }
         if (mygoResults.isEmpty() && !mygoLoading && mygoError == null && mygoPage > 0) {
             content.addView(mygoStatus("找不到相關梗圖"), LinearLayout.LayoutParams(-1, dp(86)))
@@ -1813,7 +1835,7 @@ class IceInputMethodService : InputMethodService() {
             pair.forEach { image ->
                 val card = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(dp(4), dp(4), dp(4), dp(3))
+                    setPadding(dp(4), dp(4), dp(4), dp(4))
                     background = candidateBackground(12)
                     contentDescription = "插入梗圖：${image.alt}"
                     onHapticClick { insertMygoImage(image) }
@@ -1821,31 +1843,34 @@ class IceInputMethodService : InputMethodService() {
                 val preview = ImageView(this).apply {
                     scaleType = ImageView.ScaleType.CENTER_CROP
                     background = rounded(specialSurface, 8)
+                    clipToOutline = true
                     tag = image.id
                 }
                 card.addView(preview, LinearLayout.LayoutParams(-1, dp(72)))
                 card.addView(TextView(this).apply {
                     text = image.alt.ifBlank { "MyGO 梗圖" }
                     setTextColor(ink)
-                    textSize = 11f
+                    textSize = 12f
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(3), 0, dp(3), 0)
-                }, LinearLayout.LayoutParams(-1, dp(22)))
-                row.addView(card, LinearLayout.LayoutParams(0, dp(101), 1f).apply {
-                    setMargins(dp(3), dp(3), dp(3), dp(3))
+                    setPadding(dp(4), 0, dp(4), 0)
+                }, LinearLayout.LayoutParams(-1, dp(24)))
+                row.addView(card, LinearLayout.LayoutParams(0, dp(104), 1f).apply {
+                    setMargins(dp(4), dp(4), dp(4), dp(4))
                 })
                 loadMygoThumbnail(image, preview)
             }
-            if (pair.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, dp(101), 1f))
+            if (pair.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, dp(104), 1f).apply {
+                setMargins(dp(4), dp(4), dp(4), dp(4))
+            })
             content.addView(row)
         }
         if (mygoLoading) content.addView(mygoStatus("正在載入梗圖…"), LinearLayout.LayoutParams(-1, dp(58)))
         mygoError?.let { error ->
             content.addView(TextView(this).apply {
                 text = "$error · 點此重試"
-                setTextColor(blue)
+                setTextColor(accent)
                 textSize = 13f
                 gravity = Gravity.CENTER
                 background = keyBackground(specialSurface)
@@ -1855,14 +1880,14 @@ class IceInputMethodService : InputMethodService() {
         if (mygoHasNext && !mygoLoading && mygoError == null) {
             content.addView(TextView(this).apply {
                 text = "載入更多"
-                setTextColor(blue)
+                setTextColor(accent)
                 textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 gravity = Gravity.CENTER
                 background = keyBackground(specialSurface)
                 onHapticClick { fetchMygoPage(reset = false) }
-            }, LinearLayout.LayoutParams(-1, dp(43)).apply {
-                setMargins(dp(3), dp(4), dp(3), dp(3))
+            }, LinearLayout.LayoutParams(-1, dp(44)).apply {
+                setMargins(dp(4), dp(8), dp(4), dp(4))
             })
         }
         content.addView(TextView(this).apply {
@@ -2080,15 +2105,15 @@ class IceInputMethodService : InputMethodService() {
         val pinnedCount = allEntries.size - recentCount
         clipboardRecentTab?.apply {
             text = "最近 24h · $recentCount"
-            setTextColor(if (clipboardTab == ClipboardTab.RECENT) blue else muted)
-            typeface = if (clipboardTab == ClipboardTab.RECENT) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            background = if (clipboardTab == ClipboardTab.RECENT) rounded(specialSurface, 10) else null
+            setTextColor(if (clipboardTab == ClipboardTab.RECENT) accent else muted)
+            typeface = if (clipboardTab == ClipboardTab.RECENT) Typeface.create("sans-serif-medium", Typeface.NORMAL) else Typeface.DEFAULT
+            background = if (clipboardTab == ClipboardTab.RECENT) keyBackground(specialSurface) else keyBackground(Color.TRANSPARENT)
         }
         clipboardPinnedTab?.apply {
             text = "收藏 · $pinnedCount"
-            setTextColor(if (clipboardTab == ClipboardTab.PINNED) blue else muted)
-            typeface = if (clipboardTab == ClipboardTab.PINNED) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            background = if (clipboardTab == ClipboardTab.PINNED) rounded(specialSurface, 10) else null
+            setTextColor(if (clipboardTab == ClipboardTab.PINNED) accent else muted)
+            typeface = if (clipboardTab == ClipboardTab.PINNED) Typeface.create("sans-serif-medium", Typeface.NORMAL) else Typeface.DEFAULT
+            background = if (clipboardTab == ClipboardTab.PINNED) keyBackground(specialSurface) else keyBackground(Color.TRANSPARENT)
         }
         clipboardClearButton?.visibility = if (clipboardTab == ClipboardTab.RECENT && recentCount > 0)
             View.VISIBLE else View.GONE
@@ -2107,8 +2132,8 @@ class IceInputMethodService : InputMethodService() {
         entries.forEach { entry ->
             val cell = LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(13), dp(7), dp(12), dp(7))
-                background = candidateBackground(13)
+                setPadding(dp(12), dp(8), dp(8), dp(8))
+                background = candidateBackground(12)
                 contentDescription = if (entry.pinned) "已收藏，點選貼上，長按取消收藏" else "點選貼上，長按收藏"
                 onHapticClick {
                     closeClipboardPanel()
@@ -2126,10 +2151,11 @@ class IceInputMethodService : InputMethodService() {
             if (entry.imageFileName != null) {
                 val preview = ImageView(this).apply {
                     scaleType = ImageView.ScaleType.CENTER_CROP
-                    background = rounded(specialSurface, 7)
+                    background = rounded(specialSurface, 8)
+                    clipToOutline = true
                     contentDescription = entry.label ?: "圖片"
                 }
-                cell.addView(preview, LinearLayout.LayoutParams(dp(75), dp(55)).apply { rightMargin = dp(10) })
+                cell.addView(preview, LinearLayout.LayoutParams(dp(64), dp(48)).apply { rightMargin = dp(12) })
                 val file = ClipboardHistory.imageFile(this, entry)
                 if (file != null) mygoExecutor.execute {
                     val bitmap = runCatching { MyGoApi.thumbnail(file) }.getOrNull()
@@ -2143,14 +2169,15 @@ class IceInputMethodService : InputMethodService() {
                 maxLines = 2
                 ellipsize = TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
-            cell.addView(TextView(this).apply {
-                text = if (entry.pinned) "★" else "☆"
-                setTextColor(if (entry.pinned) blue else muted)
-                textSize = 21f
-                gravity = Gravity.CENTER
-            }, LinearLayout.LayoutParams(dp(36), dp(40)))
-            list.addView(cell, LinearLayout.LayoutParams(-1, dp(if (entry.imageFileName != null) 69 else 57)).apply {
-                bottomMargin = dp(5)
+            cell.addView(ImageView(this).apply {
+                setImageResource(if (entry.pinned) R.drawable.ic_bookmark_filled else R.drawable.ic_bookmark_outline)
+                imageTintList = ColorStateList.valueOf(if (entry.pinned) accent else muted)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                contentDescription = if (entry.pinned) "已收藏" else "可長按收藏"
+            }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            list.addView(cell, LinearLayout.LayoutParams(-1, dp(if (entry.imageFileName != null) 64 else 56)).apply {
+                bottomMargin = dp(8)
             })
         }
     }
@@ -2171,17 +2198,19 @@ class IceInputMethodService : InputMethodService() {
             val cell = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(5), dp(10), dp(5))
+                minimumHeight = dp(44)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
                 background = keyBackground(Color.TRANSPARENT)
                 contentDescription = "候選詞 ${index + 1}：${candidate.text}"
                 onHapticClick { selectCandidate(index, global = true) }
             }
             cell.addView(TextView(this).apply {
                 text = candidate.text
-                setTextColor(candidateBlue)
+                setTextColor(candidateInk)
                 textSize = 18f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 maxLines = 1
+                includeFontPadding = false
             })
             if (candidate.comment.isNotBlank()) {
                 cell.addView(TextView(this).apply {
@@ -2189,6 +2218,8 @@ class IceInputMethodService : InputMethodService() {
                     setTextColor(muted)
                     textSize = 11f
                     maxLines = 1
+                    setPadding(0, dp(4), 0, 0)
+                    includeFontPadding = false
                 })
             }
             list.addView(cell, android.view.ViewGroup.LayoutParams(-2, -2))
@@ -2277,12 +2308,12 @@ class IceInputMethodService : InputMethodService() {
                 }
                 if (key == "EMOJI") contentDescription = "開啟表情符號"
                 gravity = Gravity.CENTER
-                setTextColor(if (action || shifted) Color.WHITE else if (special) blue else ink)
+                setTextColor(if (action || shifted) palette.onAction else ink)
                 textSize = if (punctuationKey || key == "EMOJI") 21f else if (bottom || special) 14f else 21f
-                typeface = if (special || action) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                typeface = if (special || action) Typeface.create("sans-serif-medium", Typeface.NORMAL) else Typeface.DEFAULT
                 if (alternate == null && symbolChoices == null && !punctuationKey) {
-                    background = keyBackground(if (action || shifted) actionBlue else if (special) specialSurface else keySurface)
-                    elevation = dp(1).toFloat()
+                    background = keyBackground(if (action || shifted) actionColor else if (special) specialSurface else keySurface)
+                    elevation = 0f
                     if (key == "SPACE") {
                         contentDescription = "空白，按住左右滑動移動游標"
                         setOnTouchListener { touched, event -> handleSpaceTouch(touched, event) }
@@ -2300,11 +2331,11 @@ class IceInputMethodService : InputMethodService() {
                         else -> if (mediaQueryEditing) R.drawable.ic_search_outline else R.drawable.ic_enter_outline
                     }
                     setImageResource(icon)
-                    imageTintList = ColorStateList.valueOf(if (action || shifted) Color.WHITE else blue)
+                    imageTintList = ColorStateList.valueOf(if (action || shifted) palette.onAction else ink)
                     scaleType = ImageView.ScaleType.CENTER_INSIDE
                     setPadding(dp(10), dp(10), dp(10), dp(10))
-                    background = keyBackground(if (action || shifted) actionBlue else specialSurface)
-                    elevation = dp(1).toFloat()
+                    background = keyBackground(if (action || shifted) actionColor else specialSurface)
+                    elevation = 0f
                     contentDescription = when (key) {
                         "SHIFT" -> when (shiftState) {
                             ShiftState.OFF -> "Shift，切換下一個字母大寫"
@@ -2321,11 +2352,11 @@ class IceInputMethodService : InputMethodService() {
             } else if (key == "EMOJI") {
                 ImageView(this).apply {
                     setImageResource(R.drawable.ic_emoji_outline)
-                    imageTintList = ColorStateList.valueOf(blue)
+                    imageTintList = ColorStateList.valueOf(ink)
                     scaleType = ImageView.ScaleType.CENTER_INSIDE
                     setPadding(dp(5), dp(5), dp(5), dp(5))
                     background = keyBackground(specialSurface)
-                    elevation = dp(1).toFloat()
+                    elevation = 0f
                     contentDescription = if (mediaQueryEditing) "返回表情符號" else "開啟表情符號，長按左滑 GIF、右滑 MyGO"
                     if (mediaQueryEditing) onHapticClick {
                         leaveMediaQueryEditing(search = false)
@@ -2338,7 +2369,7 @@ class IceInputMethodService : InputMethodService() {
             } else if (alternate != null) {
                 FrameLayout(this).apply {
                     background = keyBackground(keySurface)
-                    elevation = dp(1).toFloat()
+                    elevation = 0f
                     contentDescription = "$label，長按選擇或上滑輸入 $alternate"
                     addView(view, FrameLayout.LayoutParams(-1, -1))
                     addView(TextView(this@IceInputMethodService).apply {
@@ -2355,7 +2386,7 @@ class IceInputMethodService : InputMethodService() {
             } else if (symbolChoices != null) {
                 FrameLayout(this).apply {
                     background = keyBackground(keySurface)
-                    elevation = dp(1).toFloat()
+                    elevation = 0f
                     val hint = symbolChoices.values[symbolChoices.preferred]
                     contentDescription = "$label，長按選擇符號，上滑輸入 $hint"
                     addView(view, FrameLayout.LayoutParams(-1, -1))
@@ -2373,7 +2404,7 @@ class IceInputMethodService : InputMethodService() {
             } else if (punctuationKey) {
                 FrameLayout(this).apply {
                     background = keyBackground(keySurface)
-                    elevation = dp(1).toFloat()
+                    elevation = 0f
                     contentDescription = "${punctuationText(",")}，長按選擇或上滑輸入 ${punctuationText(".")}"
                     addView(view, FrameLayout.LayoutParams(-1, -1))
                     addView(TextView(this@IceInputMethodService).apply {
@@ -2875,7 +2906,7 @@ class IceInputMethodService : InputMethodService() {
                         "GIF" -> 17f
                         else -> 19f
                     }
-                    typeface = Typeface.DEFAULT_BOLD
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 }
                 row.addView(option, LinearLayout.LayoutParams(if (rows > 1) dp(48) else 0, -1,
                     if (rows > 1) 0f else 1f))
@@ -2897,7 +2928,7 @@ class IceInputMethodService : InputMethodService() {
                 else if (anchorSelected) dp(48 * selected + 24)
                 else width / 2)
                 .coerceIn(0, (frame.width - width).coerceAtLeast(0))
-            topMargin = (keyPosition[1] - framePosition[1] - height - dp(5)).coerceAtLeast(0)
+            topMargin = (keyPosition[1] - framePosition[1] - height - dp(4)).coerceAtLeast(0)
         }
         popup.visibility = View.VISIBLE
     }
@@ -2911,9 +2942,9 @@ class IceInputMethodService : InputMethodService() {
             text = if (choice == 0) "清空" else "復原"
             gravity = Gravity.CENTER
             textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            background = rounded(actionBlue, 10)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(palette.onAction)
+            background = rounded(actionColor, 8)
             popup.addView(this, LinearLayout.LayoutParams(-1, -1))
         })
         val keyPosition = IntArray(2)
@@ -3079,12 +3110,12 @@ class IceInputMethodService : InputMethodService() {
 
     private fun updateHoldChoice(selected: Int) {
         holdOptions.forEachIndexed { index, option ->
-            val color = if (index == selected) Color.WHITE else ink
+            val color = if (index == selected) palette.onAction else ink
             when (option) {
                 is TextView -> option.setTextColor(color)
                 is ImageView -> option.imageTintList = ColorStateList.valueOf(color)
             }
-            option.background = rounded(if (index == selected) actionBlue else Color.TRANSPARENT, 10)
+            option.background = rounded(if (index == selected) actionColor else Color.TRANSPARENT, 8)
         }
     }
 
@@ -3189,19 +3220,19 @@ class IceInputMethodService : InputMethodService() {
 
     private fun keyBackground(color: Int): StateListDrawable = StateListDrawable().apply {
         val pressedColor = when (color) {
-            keySurface -> if (darkMode) Color.rgb(58, 82, 113) else Color.rgb(213, 225, 242)
-            actionBlue -> if (darkMode) Color.rgb(41, 84, 148) else Color.rgb(34, 73, 135)
-            else -> if (darkMode) Color.rgb(67, 98, 139) else Color.rgb(185, 205, 234)
+            keySurface -> palette.keyPressed
+            actionColor -> palette.actionPressed
+            else -> palette.insetPressed
         }
-        addState(intArrayOf(android.R.attr.state_pressed), rounded(pressedColor, 11))
-        addState(intArrayOf(), rounded(color, 11))
+        addState(intArrayOf(android.R.attr.state_pressed), rounded(pressedColor, 8))
+        addState(intArrayOf(), rounded(color, 8).apply {
+            if (color != Color.TRANSPARENT && color != actionColor) setStroke(dp(1), palette.outline)
+        })
     }
 
     private fun candidateBackground(radius: Int): StateListDrawable = StateListDrawable().apply {
-        addState(intArrayOf(android.R.attr.state_pressed), rounded(
-            if (darkMode) Color.rgb(59, 92, 134) else Color.rgb(192, 214, 241), radius))
-        addState(intArrayOf(), rounded(
-            if (darkMode) Color.rgb(42, 68, 103) else Color.rgb(224, 234, 249), radius))
+        addState(intArrayOf(android.R.attr.state_pressed), rounded(palette.insetPressed, radius))
+        addState(intArrayOf(), rounded(keySurface, radius))
     }
 
     private fun rounded(color: Int, radius: Int): GradientDrawable = GradientDrawable().apply {

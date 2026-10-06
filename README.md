@@ -21,6 +21,8 @@ Shift 與刪除鍵加寬。按鍵外觀加大，觸控範圍延伸到相鄰按�
 
 沒有候選字時，鍵盤上方的「简／繁」按鈕可切換簡體與台灣繁體輸出；繁體轉換使用 OpenCC `s2tw`。「全／半」按鈕可切換標點寬度，並保留中英文模式各自的設定。設定頁亦可切換深色模式。
 
+介面依 [Claude DESIGN.md](https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/claude/DESIGN.md) 調整為奶油色、珊瑚色與暖色深色模式；設定頁使用襯線標題、統一間距與較克制的圓角。鍵盤與各面板共用同一組配色，規範記錄於 [DESIGN.md](DESIGN.md)。
+
 設定頁的「常用字」可新增、編輯或刪除英文字母縮寫與輸出內容，例如將 `id` 設為 `E14135065`。儲存後會自動重新部署 Rime；在中文模式輸入縮寫，對應內容會出現在候選欄，點選即可插入。
 
 Emoji 鍵短按會打開可分類瀏覽的表情面板，點選即可輸入；左右拖動可跟手切換分類，最近使用的表情保存在本機。表情資料取自 Unicode Emoji 18.0 的 3,963 個 fully-qualified 項目，依常見的九大類排列，並會依裝置字型支援情況過濾。人物表情的中性、男性、女性樣式及各自膚色收在同一個長按選單；其餘支援膚色的表情也可長按選擇。雙人牽手、親吻、情侶、握手、兔耳及摔角的混合膚色組合也收在各自的代表表情之下；長按代表表情後，可從選擇頁直接點選組合。長按 Emoji 鍵後左滑進入 GIF 搜尋頁，右滑進入 MyGO 梗圖搜尋頁。GIF 分頁使用 GIPHY Android SDK 顯示熱門動圖並搜尋；點選 GIF 時，支援 `image/gif` 的輸入框會直接接收，不支援的輸入框會將 GIF 放入系統剪貼簿。MyGO 分頁使用 [miyago9267/MyGO-Searcher](https://github.com/miyago9267/MyGO-Searcher) 的 [v1 API](https://github.com/miyago9267/MyGO-Searcher/blob/main/docs/API.md) 顯示熱門圖並搜尋梗圖。點選圖片時，支援圖片輸入的 App 會直接接收圖片；其他輸入框則會把圖片存入系統和鍵盤剪貼簿。鍵盤剪貼簿可保存文字與圖片，點選圖片可再次插入，長按可收藏。
@@ -35,7 +37,7 @@ Emoji 鍵短按會打開可分類瀏覽的表情面板，點選即可輸入；�
 
 需要 Android SDK 36 與 JDK 17 以上。Windows：
 
-若要啟用 GIF 搜尋，請向 GIPHY 申請 Android SDK 金鑰，並在不會提交的 `local.properties` 加入 `GIPHY_SDK_KEY=你的金鑰`。未設定金鑰時仍可建置，GIF 分頁會顯示設定提示。
+若要啟用 GIF 搜尋，請向 GIPHY 申請 Android SDK 金鑰，並在不會提交的 `local.properties` 加入 `GIPHY_SDK_KEY=你的金鑰`。未設定金鑰時仍可建置，GIF 分頁會顯示暫時無法使用。
 
 ```powershell
 .\gradlew.bat :app:assembleDebug
