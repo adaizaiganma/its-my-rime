@@ -66,6 +66,7 @@ private const val RIME_CHAR_LEFT = 0xff96
 private const val RIME_CHAR_RIGHT = 0xff98
 private const val SHIFT_MASK = 1
 private const val DELETE_REPEAT_INTERVAL_MS = 65L
+private const val QUICK_PASTE_LIFETIME_MS = 10L * 60 * 1000
 private const val KEY_CELL_HEIGHT_DP = 55
 private const val KEY_HORIZONTAL_INSET_DP = 1
 private const val KEY_VERTICAL_INSET_DP = 2
@@ -106,6 +107,8 @@ class IceInputMethodService : InputMethodService() {
     private var emptyToolbar: LinearLayout? = null
     private var candidateBar: LinearLayout? = null
     private var caption: TextView? = null
+    private var quickPasteButton: LinearLayout? = null
+    private var quickPasteText: TextView? = null
     private var traditionalButton: TextView? = null
     private var punctuationWidthButton: TextView? = null
     private var clipboardButton: ImageView? = null
@@ -182,6 +185,11 @@ class IceInputMethodService : InputMethodService() {
     private val inputPreferences by lazy { getSharedPreferences("input_modes", MODE_PRIVATE) }
     private val clipboardManager by lazy { getSystemService(CLIPBOARD_SERVICE) as ClipboardManager }
     private var lastCapturedClipboardText: String? = null
+    private var quickPasteEntry: ClipboardEntry? = null
+    private var clipboardCaptureRequest = 0
+    private var lastCapturedClipboardUri: String? = null
+    private var inputViewActive = false
+    private val quickPasteExpiry = Runnable { updateQuickPasteSuggestion() }
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         Handler(Looper.getMainLooper()).post { captureClipboard(fromChange = true) }
     }
@@ -208,6 +216,7 @@ class IceInputMethodService : InputMethodService() {
 
     override fun onDestroy() {
         dismissPreeditPreview()
+        mainHandler.removeCallbacks(quickPasteExpiry)
         appearancePreferences.unregisterOnSharedPreferenceChangeListener(appearanceListener)
         clipboardManager.removePrimaryClipChangedListener(clipboardListener)
         mygoExecutor.shutdownNow()
@@ -235,7 +244,39 @@ class IceInputMethodService : InputMethodService() {
             typeface = Typeface.DEFAULT_BOLD
             maxLines = 1
         }
-        emptyToolbar?.addView(caption, LinearLayout.LayoutParams(0, dp(36), 1f))
+        val toolbarLead = FrameLayout(this)
+        toolbarLead.addView(caption, FrameLayout.LayoutParams(-1, dp(36), Gravity.CENTER_VERTICAL))
+        quickPasteButton = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            background = keyBackground(specialSurface)
+            addView(ImageView(this@IceInputMethodService).apply {
+                setImageResource(R.drawable.ic_clipboard_history)
+                imageTintList = ColorStateList.valueOf(blue)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+            }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { leftMargin = dp(4) })
+            quickPasteText = TextView(this@IceInputMethodService).apply {
+                setTextColor(ink)
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            addView(quickPasteText, LinearLayout.LayoutParams(0, -1, 1f))
+            addView(TextView(this@IceInputMethodService).apply {
+                text = "×"
+                contentDescription = "關閉快速貼上"
+                setTextColor(muted)
+                textSize = 20f
+                gravity = Gravity.CENTER
+                onHapticClick { dismissQuickPasteSuggestion() }
+            }, LinearLayout.LayoutParams(dp(29), -1))
+            onHapticClick { pasteQuickSuggestion() }
+        }
+        toolbarLead.addView(quickPasteButton, FrameLayout.LayoutParams(-1, dp(36), Gravity.CENTER_VERTICAL))
+        emptyToolbar?.addView(toolbarLead, LinearLayout.LayoutParams(0, dp(40), 1f))
         clipboardButton = ImageView(this).apply {
             setImageResource(R.drawable.ic_clipboard_history)
             imageTintList = ColorStateList.valueOf(blue)
@@ -418,6 +459,7 @@ class IceInputMethodService : InputMethodService() {
                 background = keyBackground(specialSurface)
                 onHapticClick {
                     ClipboardHistory.clearRecent(this@IceInputMethodService)
+                    dismissQuickPasteSuggestion()
                     renderClipboardHistory()
                 }
             }
@@ -504,14 +546,17 @@ class IceInputMethodService : InputMethodService() {
             isClippingEnabled = false
         }
         renderCandidates(null)
+        updateQuickPasteSuggestion()
         renderKeys()
         return inputFrame!!
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        inputViewActive = true
         refreshAppearance()
         captureClipboard()
+        updateQuickPasteSuggestion()
     }
 
     private fun refreshAppearance() {
@@ -530,6 +575,7 @@ class IceInputMethodService : InputMethodService() {
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        inputViewActive = false
         generation++
         val variation = attribute?.inputType?.and(InputType.TYPE_MASK_VARIATION) ?: 0
         val inputClass = attribute?.inputType?.and(InputType.TYPE_MASK_CLASS) ?: 0
@@ -538,6 +584,7 @@ class IceInputMethodService : InputMethodService() {
             InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
             InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
         )) || (inputClass == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+        updateQuickPasteSuggestion()
         symbols = false
         ascii = false
         chineseFullPunctuation = inputPreferences.getBoolean("chinese_full_punctuation", true)
@@ -582,6 +629,8 @@ class IceInputMethodService : InputMethodService() {
     }
 
     override fun onFinishInput() {
+        inputViewActive = false
+        updateQuickPasteSuggestion()
         generation++
         if (editorComposing) currentInputConnection?.finishComposingText()
         editorComposing = false
@@ -758,25 +807,90 @@ class IceInputMethodService : InputMethodService() {
             ?.getItemAt(0)?.text?.toString()
     }
 
+    private fun updateQuickPasteSuggestion() {
+        mainHandler.removeCallbacks(quickPasteExpiry)
+        val entry = quickPasteEntry
+        val remaining = if (entry == null) 0L
+            else entry.copiedAt + QUICK_PASTE_LIFETIME_MS - System.currentTimeMillis()
+        val show = entry != null && inputViewActive && !secure && !emojiOpen && !clipboardOpen && remaining > 0 &&
+            entry.copiedAt > inputPreferences.getLong("quick_paste_dismissed_at", 0)
+        quickPasteButton?.visibility = if (show) View.VISIBLE else View.GONE
+        caption?.visibility = if (show) View.GONE else View.VISIBLE
+        if (show) {
+            val preview = entry.text?.replace('\n', ' ')?.replace('\r', ' ')?.trim()
+                ?.take(80)?.ifEmpty { "空白文字" } ?: entry.label?.take(80) ?: "圖片"
+            quickPasteText?.text = preview
+            quickPasteButton?.contentDescription = "貼上剛複製的內容：$preview"
+            mainHandler.postDelayed(quickPasteExpiry, remaining)
+        }
+    }
+
+    private fun dismissQuickPasteSuggestion() {
+        quickPasteEntry?.let {
+            inputPreferences.edit().putLong("quick_paste_dismissed_at", it.copiedAt).apply()
+        }
+        updateQuickPasteSuggestion()
+    }
+
+    private fun pasteQuickSuggestion() {
+        val entry = quickPasteEntry ?: return
+        if (secure || entry.copiedAt + QUICK_PASTE_LIFETIME_MS <= System.currentTimeMillis()) return
+        dismissQuickPasteSuggestion()
+        val image = ClipboardHistory.imageFile(this, entry)
+        if (image != null) insertImageFile(image, entry.mimeType ?: "image/jpeg", entry.label ?: "圖片")
+        else entry.text?.let(::commitLiteral)
+    }
+
     private fun captureClipboard(fromChange: Boolean = false) {
-        if (secure) return
+        val request = ++clipboardCaptureRequest
+        if (secure) {
+            quickPasteEntry = null
+            updateQuickPasteSuggestion()
+            return
+        }
         val clip = runCatching { clipboardManager.primaryClip }.getOrNull()
         if (clip == null || clip.itemCount == 0) {
             lastCapturedClipboardText = null
+            lastCapturedClipboardUri = null
+            quickPasteEntry = null
+            updateQuickPasteSuggestion()
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            clip.description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true) return
-        val copiedAt = ClipboardHistory.captureTime(this, clip.description.timestamp, fromChange) ?: return
-        val item = clip.getItemAt(0)
-        val text = item.text?.toString()
-        if (text != null) {
-            if (!fromChange && text == lastCapturedClipboardText) return
-            lastCapturedClipboardText = text
-            if (ClipboardHistory.record(this, text, copiedAt) && clipboardOpen) renderClipboardHistory()
+            clip.description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true) {
+            quickPasteEntry = null
+            updateQuickPasteSuggestion()
             return
         }
-        val uri = item.uri ?: return
+        val item = clip.getItemAt(0)
+        val text = item.text?.toString()
+        val uri = item.uri
+        val copiedAt = ClipboardHistory.captureTime(this, clip.description.timestamp, fromChange)
+        if (copiedAt == null) {
+            if (text != quickPasteEntry?.text ||
+                (text == null && uri?.toString() != lastCapturedClipboardUri)) quickPasteEntry = null
+            updateQuickPasteSuggestion()
+            return
+        }
+        if (text != null) {
+            if (!fromChange && text == lastCapturedClipboardText &&
+                quickPasteEntry?.text == text && quickPasteEntry?.copiedAt == copiedAt) {
+                updateQuickPasteSuggestion()
+                return
+            }
+            lastCapturedClipboardText = text
+            lastCapturedClipboardUri = null
+            val recorded = ClipboardHistory.record(this, text, copiedAt)
+            quickPasteEntry = if (recorded) ClipboardEntry(text = text, pinned = false, copiedAt = copiedAt) else null
+            updateQuickPasteSuggestion()
+            if (recorded && clipboardOpen) renderClipboardHistory()
+            return
+        }
+        quickPasteEntry = null
+        updateQuickPasteSuggestion()
+        if (uri == null) return
+        lastCapturedClipboardText = null
+        lastCapturedClipboardUri = uri.toString()
         val mime = runCatching { contentResolver.getType(uri) }.getOrNull()?.takeIf { it.startsWith("image/") }
             ?: (0 until clip.description.mimeTypeCount).map { clip.description.getMimeType(it) }
                 .firstOrNull { it.startsWith("image/") }
@@ -784,7 +898,13 @@ class IceInputMethodService : InputMethodService() {
         val label = clip.description.label?.toString().orEmpty().ifBlank { "圖片" }
         mygoExecutor.execute {
             val stored = runCatching { ClipboardHistory.recordImageUri(this, uri, mime, label, copiedAt) }.getOrNull()
-            if (stored != null) mainHandler.post { if (clipboardOpen) renderClipboardHistory() }
+            if (stored != null) mainHandler.post {
+                if (request == clipboardCaptureRequest && !secure) {
+                    quickPasteEntry = stored
+                    updateQuickPasteSuggestion()
+                }
+                if (clipboardOpen) renderClipboardHistory()
+            }
         }
     }
 
@@ -1096,6 +1216,7 @@ class IceInputMethodService : InputMethodService() {
                 !RimeManager.status.ready -> RimeManager.status.message
                 else -> modeCaption()
             }
+            updateQuickPasteSuggestion()
             return
         }
         closeClipboardPanel()
@@ -1170,6 +1291,7 @@ class IceInputMethodService : InputMethodService() {
         captureClipboard()
         clipboardTab = ClipboardTab.RECENT
         clipboardOpen = true
+        updateQuickPasteSuggestion()
         dismissPreeditPreview()
         rows?.visibility = View.GONE
         clipboardPanel?.visibility = View.VISIBLE
@@ -1183,6 +1305,7 @@ class IceInputMethodService : InputMethodService() {
 
     private fun closeClipboardPanel() {
         clipboardOpen = false
+        updateQuickPasteSuggestion()
         clipboardPanel?.visibility = View.GONE
         updatePreeditPreview(latestState)
         rows?.visibility = if (expanded || (emojiOpen && !mediaQueryEditing)) View.GONE else View.VISIBLE
@@ -1257,6 +1380,7 @@ class IceInputMethodService : InputMethodService() {
         val candidatesVisible = !secure && !latestState?.candidates.isNullOrEmpty()
         emptyToolbar?.visibility = if (candidatesVisible) View.GONE else View.VISIBLE
         candidateBar?.visibility = if (candidatesVisible) View.VISIBLE else View.GONE
+        updateQuickPasteSuggestion()
         if (wasMediaQueryEditing) renderCandidates(null) else updatePreeditPreview(latestState)
     }
 
