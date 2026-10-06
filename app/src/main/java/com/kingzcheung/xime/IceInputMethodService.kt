@@ -2372,15 +2372,7 @@ class IceInputMethodService : InputMethodService() {
                     elevation = 0f
                     contentDescription = "$label，長按選擇或上滑輸入 $alternate"
                     addView(view, FrameLayout.LayoutParams(-1, -1))
-                    addView(uiTextView().apply {
-                        text = alternate
-                        textSize = 10f
-                        setTextColor(muted)
-                        gravity = Gravity.TOP or Gravity.RIGHT
-                    }, FrameLayout.LayoutParams(dp(18), dp(17), Gravity.TOP or Gravity.RIGHT).apply {
-                        topMargin = dp(2)
-                        rightMargin = dp(4)
-                    })
+                    addKeyHint(alternate)
                     setOnTouchListener { touched, event -> handleLetterKeyTouch(touched, event, key, alternate) }
                 }
             } else if (symbolChoices != null) {
@@ -2390,15 +2382,7 @@ class IceInputMethodService : InputMethodService() {
                     val hint = symbolChoices.values[symbolChoices.preferred]
                     contentDescription = "$label，長按選擇符號，上滑輸入 $hint"
                     addView(view, FrameLayout.LayoutParams(-1, -1))
-                    addView(uiTextView().apply {
-                        text = hint
-                        textSize = 10f
-                        setTextColor(muted)
-                        gravity = Gravity.TOP or Gravity.RIGHT
-                    }, FrameLayout.LayoutParams(dp(20), dp(17), Gravity.TOP or Gravity.RIGHT).apply {
-                        topMargin = dp(2)
-                        rightMargin = dp(4)
-                    })
+                    addKeyHint(hint)
                     setOnTouchListener { touched, event -> handleSymbolKeyTouch(touched, event, key, symbolChoices) }
                 }
             } else if (punctuationKey) {
@@ -2407,15 +2391,7 @@ class IceInputMethodService : InputMethodService() {
                     elevation = 0f
                     contentDescription = "${punctuationText(",")}，長按選擇或上滑輸入 ${punctuationText(".")}"
                     addView(view, FrameLayout.LayoutParams(-1, -1))
-                    addView(uiTextView().apply {
-                        text = punctuationText(".")
-                        textSize = 10f
-                        setTextColor(muted)
-                        gravity = Gravity.TOP or Gravity.RIGHT
-                    }, FrameLayout.LayoutParams(dp(20), dp(17), Gravity.TOP or Gravity.RIGHT).apply {
-                        topMargin = dp(2)
-                        rightMargin = dp(4)
-                    })
+                    addKeyHint(punctuationText("."))
                     setOnTouchListener { touched, event -> handlePunctuationTouch(touched, event) }
                 }
             } else view
@@ -3217,6 +3193,21 @@ class IceInputMethodService : InputMethodService() {
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> view.isPressed = false
         }
+    }
+
+    private fun FrameLayout.addKeyHint(value: String) {
+        // Size to the font's line height so digits, punctuation and scripts cannot
+        // be clipped by the old 17 dp box. The key background already insets the top.
+        addView(uiTextView().apply {
+            text = value
+            textSize = 10f
+            includeFontPadding = false
+            isSingleLine = true
+            gravity = Gravity.TOP or Gravity.RIGHT
+            setTextColor(muted)
+        }, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.RIGHT).apply {
+            rightMargin = dp(4)
+        })
     }
 
     private fun uiTextView() = TextView(this).apply {

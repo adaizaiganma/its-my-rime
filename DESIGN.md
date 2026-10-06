@@ -14,6 +14,7 @@ This Android adaptation uses warm cream, coral actions, warm ink and dark produc
 - Shapes: 8 dp buttons, keys and inputs; 12 dp cards and selection menus. Shadows are reserved for floating menus and the composition preview.
 - Settings respect status, navigation and keyboard insets. Content caps at 640 dp on wider screens.
 - Keyboard height, letter positions and gesture hit areas stay stable. Toolbar actions share the existing 44 × 40 dp size. Adjacent action groups have explicit gutters.
+- Key corner hints use one-line text with intrinsic height and no extra font padding. They align to the key's existing top inset and a 4 dp right margin, avoiding fixed-height clipping with bundled fonts.
 - Emoji categories remain flat with filled selected icons. Candidates remain flat. Clipboard and media items use warm surfaces and restrained icons.
 - Both appearance modes cover settings, keys, candidates, clipboard, Emoji, GIF/MyGO search and floating previews.
 - The app mark is a cream serif R with an insertion cursor on coral. Adaptive launcher layers support round/square masks and Android 13 themed icons; editable artwork is in `artwork/app-icon.svg`.
