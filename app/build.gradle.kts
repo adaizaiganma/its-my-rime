@@ -20,8 +20,8 @@ android {
         applicationId = "dev.rime.icekeyboard"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         buildConfigField("String", "GIPHY_SDK_KEY", "\"$giphySdkKey\"")
     }
@@ -29,6 +29,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Signed with this machine's debug key so release APKs install as updates of each other.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
