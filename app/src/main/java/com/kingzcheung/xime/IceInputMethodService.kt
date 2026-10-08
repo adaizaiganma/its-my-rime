@@ -151,6 +151,12 @@ class IceInputMethodService : InputMethodService() {
     private var clipboardRecentTab: TextView? = null
     private var clipboardPinnedTab: TextView? = null
     private var clipboardClearButton: TextView? = null
+    private var editButton: ImageView? = null
+    private var editPanel: LinearLayout? = null
+    private var editSelectButton: ImageView? = null
+    private var editOpen = false
+    // While on, arrow and line keys extend the selection instead of moving the cursor.
+    private var editSelecting = false
     private var emojiToolbar: LinearLayout? = null
     private var emojiCategoryScroll: HorizontalScrollView? = null
     private var emojiBackButton: ImageView? = null
@@ -167,6 +173,8 @@ class IceInputMethodService : InputMethodService() {
     private var emojiCategory = -1
     private var emojiCategoryTransitioning = false
     private val emojiGrids = mutableMapOf<Int, GridView>()
+    // Recent emoji order is frozen while the panel is open so cells don't shift under the finger.
+    private var emojiRecentSnapshot: List<String>? = null
     private var emojiReadyCallbackPending = false
     private var serviceDestroyed = false
     private var emojiVariantPage: EmojiVariantChoices? = null
@@ -174,7 +182,7 @@ class IceInputMethodService : InputMethodService() {
     private var mediaQueryEditing = false
     private var mediaQueryTab = EmojiTab.MYGO
     private var gifQuery = ""
-    private var giphyConfigured = false
+    private var giphyConfiguredKey: String? = null
     private var mygoQuery = ""
     private var mediaPreedit = ""
     private val mygoResults = mutableListOf<MyGoImage>()
@@ -345,6 +353,18 @@ class IceInputMethodService : InputMethodService() {
             onHapticClick { toggleClipboardPanel() }
         }
         emptyToolbar?.addView(clipboardButton, LinearLayout.LayoutParams(dp(44), dp(40)).apply {
+            rightMargin = dp(4)
+        })
+        editButton = ImageView(this).apply {
+            setImageResource(R.drawable.ic_text_edit)
+            imageTintList = ColorStateList.valueOf(ink)
+            contentDescription = "開啟文字編輯"
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = keyBackground(specialSurface)
+            onHapticClick { toggleEditPanel() }
+        }
+        emptyToolbar?.addView(editButton, LinearLayout.LayoutParams(dp(44), dp(40)).apply {
             rightMargin = dp(4)
         })
         punctuationWidthButton = uiTextView().apply {
@@ -563,7 +583,9 @@ class IceInputMethodService : InputMethodService() {
         clipboardScrollView.addView(clipboardList)
         clipboardPanel?.addView(clipboardScrollView, LinearLayout.LayoutParams(-1, 0, 1f))
         keyboardArea.addView(clipboardPanel, FrameLayout.LayoutParams(-1, -1))
-        emojiPanel = LinearLayout(this).apply {
+        editPanel = buildEditPanel()
+        keyboardArea.addView(editPanel, FrameLayout.LayoutParams(-1, -1))
+        emojiPanel =LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             background = rounded(keyboardSurface, 12)
@@ -629,6 +651,7 @@ class IceInputMethodService : InputMethodService() {
         if (root != null) {
             closeExpandedCandidates()
             closeClipboardPanel()
+            closeEditPanel()
             closeEmojiPanel()
             setInputView(onCreateInputView())
             state?.let(::renderCandidates)
@@ -657,6 +680,7 @@ class IceInputMethodService : InputMethodService() {
         clearUsedClipboard = false
         closeExpandedCandidates()
         closeClipboardPanel()
+        closeEditPanel()
         closeEmojiPanel()
         mygoRequest++
         gifQuery = ""
@@ -701,6 +725,7 @@ class IceInputMethodService : InputMethodService() {
         holdPopup?.visibility = View.GONE
         closeExpandedCandidates()
         closeClipboardPanel()
+        closeEditPanel()
         closeEmojiPanel()
         dismissPreeditPreview()
         mygoRequest++
@@ -1240,7 +1265,7 @@ class IceInputMethodService : InputMethodService() {
         val frame = inputFrame ?: return
         val preview = preeditPreview ?: return
         val preedit = state?.let(::formattedPreedit).orEmpty()
-        if (secure || mediaQueryEditing || emojiOpen || clipboardOpen || preedit.isEmpty()) {
+        if (secure || mediaQueryEditing || emojiOpen || clipboardOpen || editOpen || preedit.isEmpty()) {
             dismissPreeditPreview()
             return
         }
@@ -1298,6 +1323,7 @@ class IceInputMethodService : InputMethodService() {
             return
         }
         closeClipboardPanel()
+        closeEditPanel()
         emptyToolbar?.visibility = View.GONE
         candidateBar?.visibility = if (!emojiOpen || mediaQueryEditing) View.VISIBLE else View.GONE
         var changed = false
@@ -1341,6 +1367,7 @@ class IceInputMethodService : InputMethodService() {
         }
         if (latestState?.candidates.isNullOrEmpty()) return
         closeClipboardPanel()
+        closeEditPanel()
         expanded = true
         rows?.visibility = View.GONE
         expandedPanel?.visibility = View.VISIBLE
@@ -1365,7 +1392,7 @@ class IceInputMethodService : InputMethodService() {
     private fun closeExpandedCandidates() {
         expanded = false
         expandRequest++
-        rows?.visibility = if (clipboardOpen || (emojiOpen && !mediaQueryEditing)) View.GONE else View.VISIBLE
+        rows?.visibility = if (clipboardOpen || editOpen || (emojiOpen && !mediaQueryEditing)) View.GONE else View.VISIBLE
         expandedPanel?.visibility = View.GONE
         moreButton?.setImageResource(R.drawable.ic_candidates_expand)
         moreButton?.contentDescription = "展開所有候選詞"
@@ -1378,6 +1405,7 @@ class IceInputMethodService : InputMethodService() {
         }
         if (secure) return
         closeExpandedCandidates()
+        closeEditPanel()
         captureClipboard()
         clipboardTab = ClipboardTab.RECENT
         clipboardOpen = true
@@ -1400,7 +1428,7 @@ class IceInputMethodService : InputMethodService() {
         updateQuickPasteSuggestion()
         clipboardPanel?.visibility = View.GONE
         updatePreeditPreview(latestState)
-        rows?.visibility = if (expanded || (emojiOpen && !mediaQueryEditing)) View.GONE else View.VISIBLE
+        rows?.visibility = if (expanded || editOpen || (emojiOpen && !mediaQueryEditing)) View.GONE else View.VISIBLE
         clipboardButton?.apply {
             background = keyBackground(specialSurface)
             imageTintList = ColorStateList.valueOf(ink)
@@ -1408,10 +1436,196 @@ class IceInputMethodService : InputMethodService() {
         }
     }
 
+    private fun buildEditPanel(): LinearLayout {
+        editOpen = false
+        editSelecting = false
+        fun cell(view: View, special: Boolean = true) = view.apply {
+            background = InsetDrawable(
+                keyBackground(if (special) specialSurface else keySurface),
+                dp(KEY_HORIZONTAL_INSET_DP), dp(KEY_VERTICAL_INSET_DP),
+                dp(KEY_HORIZONTAL_INSET_DP), dp(KEY_VERTICAL_INSET_DP)
+            )
+        }
+        fun icon(resource: Int) = ImageView(this).apply {
+            setImageResource(resource)
+            imageTintList = ColorStateList.valueOf(ink)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+        }
+        fun iconKey(resource: Int, description: String, special: Boolean = false, action: () -> Unit) =
+            cell(icon(resource).apply {
+                contentDescription = description
+                setOnTouchListener { touched, event -> handleRepeatKeyTouch(touched, event, action) }
+            }, special)
+        fun shortcutKey(shortcut: String, description: String, action: () -> Unit) =
+            cell(uiTextView().apply {
+                text = shortcut
+                gravity = Gravity.CENTER
+                textSize = 18f
+                typeface = UiFonts.displayTypeface(this@IceInputMethodService)
+                includeFontPadding = false
+                setTextColor(ink)
+                contentDescription = "$description（$shortcut）"
+                onHapticClick(action)
+            })
+        fun column(vararg views: View) = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            views.forEach { addView(it, LinearLayout.LayoutParams(-1, 0, 1f)) }
+        }
+        fun row(vararg cells: Pair<View, Float>) = LinearLayout(this).apply {
+            cells.forEach { (view, weight) -> addView(view, LinearLayout.LayoutParams(0, -1, weight)) }
+        }
+        editSelectButton = icon(R.drawable.ic_select).apply {
+            onHapticClick { setEditSelecting(!editSelecting, collapse = true) }
+        }
+        updateEditSelectButton()
+        val arrows = row(
+            iconKey(R.drawable.ic_arrow_left, "游標左移") { sendEditKey(KeyEvent.KEYCODE_DPAD_LEFT) } to 1f,
+            column(
+                iconKey(R.drawable.ic_arrow_up, "游標上移") { sendEditKey(KeyEvent.KEYCODE_DPAD_UP) },
+                editSelectButton!!,
+                iconKey(R.drawable.ic_arrow_down, "游標下移") { sendEditKey(KeyEvent.KEYCODE_DPAD_DOWN) }
+            ) to 1.4f,
+            iconKey(R.drawable.ic_arrow_right, "游標右移") { sendEditKey(KeyEvent.KEYCODE_DPAD_RIGHT) } to 1f
+        )
+        val lineKeys = row(
+            iconKey(R.drawable.ic_line_start, "移到行首") { sendEditKey(KeyEvent.KEYCODE_MOVE_HOME) } to 1f,
+            iconKey(R.drawable.ic_delete_outline, "刪除", special = true) {
+                sendEditKey(KeyEvent.KEYCODE_DEL, extend = false)
+            } to 1.4f,
+            iconKey(R.drawable.ic_line_end, "移到行尾") { sendEditKey(KeyEvent.KEYCODE_MOVE_END) } to 1f
+        )
+        val navigation = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(arrows, LinearLayout.LayoutParams(-1, 0, 3f))
+            addView(lineKeys, LinearLayout.LayoutParams(-1, 0, 1f))
+        }
+        val actions = column(
+            shortcutKey("Ctrl+A", "全選") {
+                currentInputConnection?.performContextMenuAction(android.R.id.selectAll)
+                setEditSelecting(true)
+            },
+            shortcutKey("Ctrl+X", "剪下") {
+                currentInputConnection?.performContextMenuAction(android.R.id.cut)
+                setEditSelecting(false)
+            },
+            shortcutKey("Ctrl+C", "複製") {
+                currentInputConnection?.performContextMenuAction(android.R.id.copy)
+                setEditSelecting(false)
+            },
+            shortcutKey("Ctrl+V", "貼上") {
+                currentInputConnection?.performContextMenuAction(android.R.id.paste)
+                setEditSelecting(false)
+            }
+        )
+        return LinearLayout(this).apply {
+            visibility = View.GONE
+            background = rounded(keyboardSurface, 12)
+            addView(navigation, LinearLayout.LayoutParams(0, -1, 3.4f))
+            addView(actions, LinearLayout.LayoutParams(0, -1, 1.3f).apply { leftMargin = dp(6) })
+        }
+    }
+
+    private fun toggleEditPanel() {
+        if (editOpen) {
+            closeEditPanel()
+            return
+        }
+        closeExpandedCandidates()
+        closeClipboardPanel()
+        editOpen = true
+        setEditSelecting(false)
+        updateQuickPasteSuggestion()
+        dismissPreeditPreview()
+        rows?.visibility = View.GONE
+        editPanel?.visibility = View.VISIBLE
+        editButton?.apply {
+            background = keyBackground(actionColor)
+            imageTintList = ColorStateList.valueOf(palette.onAction)
+            contentDescription = "收起文字編輯"
+        }
+    }
+
+    private fun closeEditPanel() {
+        if (!editOpen) return
+        editOpen = false
+        editSelecting = false
+        editPanel?.visibility = View.GONE
+        updatePreeditPreview(latestState)
+        rows?.visibility = if (expanded || clipboardOpen || (emojiOpen && !mediaQueryEditing)) View.GONE else View.VISIBLE
+        editButton?.apply {
+            background = keyBackground(specialSurface)
+            imageTintList = ColorStateList.valueOf(ink)
+            contentDescription = "開啟文字編輯"
+        }
+    }
+
+    private fun setEditSelecting(selecting: Boolean, collapse: Boolean = false) {
+        if (!selecting && editSelecting && collapse) {
+            // Turning selection off by hand drops the highlighted range, leaving the cursor at its end.
+            currentInputConnection?.let { connection ->
+                val extracted = connection.getExtractedText(ExtractedTextRequest(), 0)
+                if (extracted != null && extracted.selectionStart != extracted.selectionEnd) {
+                    val end = extracted.startOffset + maxOf(extracted.selectionStart, extracted.selectionEnd)
+                    connection.setSelection(end, end)
+                }
+            }
+        }
+        editSelecting = selecting
+        updateEditSelectButton()
+    }
+
+    private fun updateEditSelectButton() {
+        editSelectButton?.apply {
+            imageTintList = ColorStateList.valueOf(if (editSelecting) palette.onAction else ink)
+            background = InsetDrawable(
+                keyBackground(if (editSelecting) actionColor else specialSurface),
+                dp(KEY_HORIZONTAL_INSET_DP), dp(KEY_VERTICAL_INSET_DP),
+                dp(KEY_HORIZONTAL_INSET_DP), dp(KEY_VERTICAL_INSET_DP)
+            )
+            contentDescription = if (editSelecting) "選取中，點選取消選取" else "開始選取，方向鍵會擴大選取範圍"
+        }
+    }
+
+    private fun sendEditKey(keyCode: Int, extend: Boolean = editSelecting) {
+        val connection = currentInputConnection ?: return
+        val now = SystemClock.uptimeMillis()
+        // Holding Shift around the key lets TextView, WebView and Compose editors all extend the selection.
+        val meta = if (extend) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0
+        if (extend) connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SHIFT_LEFT, 0, meta))
+        connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, meta))
+        connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, meta))
+        if (extend) connection.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SHIFT_LEFT, 0, 0))
+    }
+
+    private fun handleRepeatKeyTouch(view: View, event: MotionEvent, action: () -> Unit): Boolean {
+        updateKeyPressed(view, event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                action()
+                val token = generation
+                val repeat = object : Runnable {
+                    override fun run() {
+                        if (view.tag !== this || token != generation || !view.isAttachedToWindow) return
+                        action()
+                        view.postDelayed(this, DELETE_REPEAT_INTERVAL_MS)
+                    }
+                }
+                view.tag = repeat
+                view.postDelayed(repeat, ViewConfiguration.getLongPressTimeout().toLong())
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                (view.tag as? Runnable)?.let(view::removeCallbacks)
+                view.tag = null
+            }
+        }
+        return true
+    }
+
     private fun openEmojiPanel() {
         if (emojiOpen) return
         closeExpandedCandidates()
         closeClipboardPanel()
+        closeEditPanel()
         emojiVariantPage = null
         emojiReturnPosition = 0
         emojiOpen = true
@@ -1431,6 +1645,7 @@ class IceInputMethodService : InputMethodService() {
         emojiVariantPage = null
         closeExpandedCandidates()
         closeClipboardPanel()
+        closeEditPanel()
         if (tab == EmojiTab.MYGO) {
             mygoRequest++
             mygoQuery = ""
@@ -1468,8 +1683,10 @@ class IceInputMethodService : InputMethodService() {
             renderKeys()
         }
         emojiOpen = false
+        emojiRecentSnapshot = null
+        emojiGrids.remove(-1)
         emojiPanel?.visibility = View.GONE
-        rows?.visibility = if (expanded || clipboardOpen) View.GONE else View.VISIBLE
+        rows?.visibility = if (expanded || clipboardOpen || editOpen) View.GONE else View.VISIBLE
         emojiToolbar?.visibility = View.GONE
         val candidatesVisible = !secure && !latestState?.candidates.isNullOrEmpty()
         emptyToolbar?.visibility = if (candidatesVisible) View.GONE else View.VISIBLE
@@ -1527,7 +1744,8 @@ class IceInputMethodService : InputMethodService() {
         val categories = EmojiCatalog.categories(this)
         emojiCategory = emojiCategory.coerceIn(-1, categories.lastIndex)
         fun emojiAt(index: Int): List<String> = if (index == -1) {
-            EmojiCatalog.recent(this).ifEmpty { categories.first().emoji.take(32) }
+            (emojiRecentSnapshot ?: EmojiCatalog.recent(this).also { emojiRecentSnapshot = it })
+                .ifEmpty { categories.first().emoji.take(32) }
         } else categories[index].emoji
         fun gridAt(index: Int): GridView = emojiGrids.getOrPut(index) { createEmojiGrid(emojiAt(index)) }.also {
             (it.parent as? android.view.ViewGroup)?.removeView(it)
@@ -1845,17 +2063,18 @@ class IceInputMethodService : InputMethodService() {
 
     private fun commitEmoji(symbol: String) {
         EmojiCatalog.remember(this, symbol)
-        emojiGrids.remove(-1)
         commitLiteral(symbol)
         if (emojiVariantPage != null) {
             emojiVariantPage = null
             renderEmojiPage()
-        } else if (emojiCategory == -1) renderEmojiPage()
+        }
     }
 
     private fun renderGifPage(body: LinearLayout) {
-        if (BuildConfig.GIPHY_SDK_KEY.isBlank() || !ensureGiphyConfigured()) {
-            body.addView(mygoStatus("GIF 目前無法使用，請稍後重試"),
+        if (!ensureGiphyConfigured()) {
+            val message = if (GiphySettings.apiKey(this).isBlank()) "尚未設定 GIPHY 金鑰，請到 App 設定頁「開始使用」填入"
+                else "GIF 目前無法使用，請稍後重試"
+            body.addView(mygoStatus(message),
                 LinearLayout.LayoutParams(-1, 0, 1f))
             return
         }
@@ -1909,12 +2128,15 @@ class IceInputMethodService : InputMethodService() {
     }
 
     private fun ensureGiphyConfigured(): Boolean {
-        if (giphyConfigured) return true
-        giphyConfigured = runCatching {
-            Giphy.configure(applicationContext, BuildConfig.GIPHY_SDK_KEY)
-            true
-        }.getOrDefault(false)
-        return giphyConfigured
+        val key = GiphySettings.apiKey(this)
+        if (key.isBlank()) return false
+        // The key can change on the settings page while the keyboard service stays alive.
+        if (giphyConfiguredKey == key) return true
+        giphyConfiguredKey = runCatching {
+            Giphy.configure(applicationContext, key)
+            key
+        }.getOrNull()
+        return giphyConfiguredKey == key
     }
 
     private fun insertGiphyGif(media: Media) {
@@ -1924,8 +2146,10 @@ class IceInputMethodService : InputMethodService() {
             val prepared = runCatching { GiphyGif.prepareForInsertion(this, media) }
             mainHandler.post {
                 if (token != generation) return@post
-                prepared.onSuccess { file -> insertImageFile(file, "image/gif", media.title?.ifBlank { "GIF" } ?: "GIF") }
-                    .onFailure { Toast.makeText(this, "GIF 下載失敗，請重試", Toast.LENGTH_SHORT).show() }
+                prepared.onSuccess { file ->
+                    insertImageFile(file, "image/gif", media.title?.ifBlank { "GIF" } ?: "GIF")
+                    returnToKeyboardAfterMedia(EmojiTab.GIF)
+                }.onFailure { Toast.makeText(this, "GIF 下載失敗，請重試", Toast.LENGTH_SHORT).show() }
             }
         }
     }
@@ -2099,11 +2323,17 @@ class IceInputMethodService : InputMethodService() {
                 if (token != generation) return@post
                 prepared.onSuccess { file ->
                     insertImageFile(file, image.mimeType, image.alt)
+                    returnToKeyboardAfterMedia(EmojiTab.MYGO)
                 }.onFailure {
                     Toast.makeText(this, "梗圖下載失敗，請重試", Toast.LENGTH_SHORT).show()
                 }
             }
         }
+    }
+
+    // Leave the media page only if the user is still browsing it, not typing a new search.
+    private fun returnToKeyboardAfterMedia(tab: EmojiTab) {
+        if (emojiOpen && emojiTab == tab && !mediaQueryEditing) closeEmojiPanel()
     }
 
     private fun insertImageFile(file: File, mimeType: String, label: String) {
@@ -2506,11 +2736,13 @@ class IceInputMethodService : InputMethodService() {
                             ShiftState.LOCKED -> "大寫鎖定"
                         }
                         "DEL" -> "刪除，長按連續刪除，上滑清空，下滑復原"
-                        else -> if (mediaQueryEditing) "搜尋 ${if (mediaQueryTab == EmojiTab.GIF) "GIF" else "MyGO 梗圖"}" else "換行"
+                        else -> if (mediaQueryEditing) "搜尋 ${if (mediaQueryTab == EmojiTab.GIF) "GIF" else "MyGO 梗圖"}" else "確認，長按或上滑換行"
                     }
-                    if (key == "DEL") {
-                        setOnTouchListener { touched, event -> handleDeleteTouch(touched, event) }
-                    } else onHapticClick { handleKey(key) }
+                    when {
+                        key == "DEL" -> setOnTouchListener { touched, event -> handleDeleteTouch(touched, event) }
+                        key == "ENTER" && !mediaQueryEditing -> setOnTouchListener { touched, event -> handleEnterTouch(touched, event) }
+                        else -> onHapticClick { handleKey(key) }
+                    }
                 }
             } else if (key == "EMOJI") {
                 ImageView(this).apply {
@@ -2858,6 +3090,66 @@ class IceInputMethodService : InputMethodService() {
                             1 -> restoreClearedText()
                             else -> if (!gesture.repeated) handleKey("DEL")
                         } else if (!gesture.cancelled) handleKey("DEL")
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private fun handleEnterTouch(view: View, event: MotionEvent): Boolean {
+        updateKeyPressed(view, event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val token = generation
+                lateinit var gesture: NumberKeyGesture
+                val longPress = Runnable {
+                    if (!gesture.cancelled && token == generation && view.isAttachedToWindow) {
+                        gesture.held = true
+                        gesture.choice = 0
+                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        showChoicePopup(view, listOf("\\n"), 0)
+                    }
+                }
+                gesture = NumberKeyGesture(event.rawX, event.rawY, longPress, choice = -1)
+                view.postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
+                view.tag = gesture
+            }
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val gesture = view.tag as? NumberKeyGesture ?: return true
+                val dx = event.rawX - gesture.startX
+                val dy = event.rawY - gesture.startY
+                if (!gesture.held && !gesture.cancelled && event.actionMasked != MotionEvent.ACTION_CANCEL) {
+                    when {
+                        dy < -dp(24) && abs(dy) > abs(dx) -> {
+                            view.removeCallbacks(gesture.longPress)
+                            gesture.held = true
+                            gesture.choice = 0
+                            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                            showChoicePopup(view, listOf("\\n"), 0)
+                        }
+                        abs(dx) > dp(24) || dy > dp(24) -> {
+                            view.removeCallbacks(gesture.longPress)
+                            gesture.cancelled = true
+                        }
+                    }
+                }
+                if (gesture.held && event.actionMasked != MotionEvent.ACTION_CANCEL) {
+                    // Sliding back down below the key releases the newline choice.
+                    val choice = if (dy > dp(24)) -1 else 0
+                    if (choice != gesture.choice) {
+                        gesture.choice = choice
+                        updateHoldChoice(choice)
+                    }
+                }
+                if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    view.removeCallbacks(gesture.longPress)
+                    view.tag = null
+                    holdPopup?.visibility = View.GONE
+                    if (event.actionMasked == MotionEvent.ACTION_UP) {
+                        if (gesture.held) {
+                            if (gesture.choice == 0) commitLiteral("\n")
+                        } else if (!gesture.cancelled) handleKey("ENTER")
                     }
                 }
             }

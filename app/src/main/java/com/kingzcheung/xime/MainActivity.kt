@@ -32,9 +32,12 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -66,6 +69,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -109,6 +117,7 @@ class MainActivity : ComponentActivity() {
     private var darkMode by mutableStateOf(false)
     private var spaceCursorSensitivity by mutableStateOf(SpaceCursorSettings.DEFAULT)
     private var quickPhrases by mutableStateOf(emptyList<QuickPhrase>())
+    private var giphyKey by mutableStateOf("")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -118,6 +127,7 @@ class MainActivity : ComponentActivity() {
         darkMode = AppearanceSettings.isDark(this)
         spaceCursorSensitivity = SpaceCursorSettings.read(this)
         quickPhrases = QuickPhrases.entries(this)
+        giphyKey = GiphySettings.userKey(this)
         applySystemBars()
         setContent {
             val palette = appPalette(darkMode)
@@ -149,9 +159,15 @@ class MainActivity : ComponentActivity() {
                     darkMode = darkMode,
                     spaceCursorSensitivity = spaceCursorSensitivity,
                     quickPhrases = quickPhrases,
+                    giphyKey = giphyKey,
                     palette = palette,
                     onEnable = { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
                     onSelect = { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker() },
+                    onGiphyKeySave = { key ->
+                        val trimmed = key.trim()
+                        if (trimmed.isEmpty()) GiphySettings.clear(this) else GiphySettings.write(this, trimmed)
+                        giphyKey = GiphySettings.userKey(this)
+                    },
                     onRedeploy = { RimeManager.redeploy(this) },
                     onDarkModeChange = { enabled ->
                         AppearanceSettings.setDark(this, enabled)
@@ -193,6 +209,7 @@ class MainActivity : ComponentActivity() {
         darkMode = AppearanceSettings.isDark(this)
         spaceCursorSensitivity = SpaceCursorSettings.read(this)
         quickPhrases = QuickPhrases.entries(this)
+        giphyKey = GiphySettings.userKey(this)
         applySystemBars()
     }
 
@@ -222,9 +239,11 @@ private fun SettingsScreen(
     darkMode: Boolean,
     spaceCursorSensitivity: Int,
     quickPhrases: List<QuickPhrase>,
+    giphyKey: String,
     palette: AppPalette,
     onEnable: () -> Unit,
     onSelect: () -> Unit,
+    onGiphyKeySave: (String) -> Unit,
     onRedeploy: () -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
     onSpaceCursorSensitivityChange: (Int) -> Unit,
@@ -273,6 +292,7 @@ private fun SettingsScreen(
             SettingsSection("開始使用", palette) {
                 SetupCard("啟用輸入法", "在系統設定中開啟 It's My Rime", setup.enabled, onEnable, palette)
                 SetupCard("設為目前鍵盤", "從輸入法清單選擇 It's My Rime", setup.selected, onSelect, palette)
+                GiphyKeyCard(giphyKey, onGiphyKeySave, palette, fieldColors)
             }
 
             SettingsSection("試試手感", palette) {
@@ -482,6 +502,96 @@ private fun TypingTestCard(palette: AppPalette, fieldColors: TextFieldColors) {
                 minLines = 2, maxLines = 5,
                 shape = RoundedCornerShape(8.dp), colors = fieldColors
             )
+        }
+    }
+}
+
+@Composable
+private fun GiphyKeyCard(savedKey: String, onSave: (String) -> Unit, palette: AppPalette, fieldColors: TextFieldColors) {
+    var editing by rememberSaveable { mutableStateOf(false) }
+    var draft by rememberSaveable { mutableStateOf("") }
+    var revealed by rememberSaveable { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
+    val buildKey = BuildConfig.GIPHY_SDK_KEY.isNotBlank()
+    val done = savedKey.isNotBlank() || buildKey
+    val invalid = draft.isNotBlank() && !GiphySettings.isValid(draft.trim())
+    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(32.dp).background(palette.soft, RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(if (done) Icons.Outlined.CheckCircle else Icons.Outlined.Key,
+                        contentDescription = null, tint = if (done) palette.success else palette.muted,
+                        modifier = Modifier.size(20.dp))
+                }
+                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text("GIF 搜尋金鑰", fontWeight = FontWeight.Medium, color = palette.text, fontSize = 15.sp)
+                    Text(when {
+                        savedKey.isNotBlank() -> "已設定 ${GiphySettings.masked(savedKey)}"
+                        buildKey -> "使用建置時的金鑰"
+                        else -> "選填，填入 GIPHY 金鑰後可搜尋 GIF"
+                    }, color = palette.muted, fontSize = 12.sp)
+                }
+                if (!editing) {
+                    TextButton(onClick = {
+                        draft = savedKey
+                        revealed = false
+                        editing = true
+                    }, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text(if (savedKey.isNotBlank()) "修改" else "填入", fontSize = 13.sp)
+                    }
+                }
+            }
+            if (editing) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    label = { Text("GIPHY Android SDK 金鑰") },
+                    singleLine = true,
+                    isError = invalid,
+                    visualTransformation = if (revealed) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        IconButton(onClick = { revealed = !revealed }) {
+                            Icon(if (revealed) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                                contentDescription = if (revealed) "隱藏金鑰" else "顯示金鑰", tint = palette.muted)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors
+                )
+                if (invalid) {
+                    Text("金鑰只能包含英文字母、數字、- 與 _", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { editing = false; draft = "" }) { Text("取消") }
+                    if (savedKey.isNotBlank()) {
+                        TextButton(onClick = {
+                            onSave("")
+                            editing = false
+                            draft = ""
+                        }) { Text("清除") }
+                    }
+                    Button(onClick = {
+                        onSave(draft)
+                        editing = false
+                        draft = ""
+                    }, enabled = draft.isNotBlank() && !invalid,
+                        shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = Color.White,
+                            disabledContainerColor = palette.soft, disabledContentColor = palette.muted)) {
+                        Text("儲存金鑰")
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("金鑰只保存在本機。", fontSize = 12.sp, color = palette.muted, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { uriHandler.openUri("https://developers.giphy.com/dashboard/") }) {
+                        Text("申請金鑰", fontSize = 12.sp)
+                    }
+                }
+            }
         }
     }
 }
