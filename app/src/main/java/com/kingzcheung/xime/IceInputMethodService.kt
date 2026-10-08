@@ -73,6 +73,7 @@ private const val RIME_CHAR_LEFT = 0xff96
 private const val RIME_CHAR_RIGHT = 0xff98
 private const val SHIFT_MASK = 1
 private const val DELETE_REPEAT_INTERVAL_MS = 65L
+private const val CARET_BLINK_INTERVAL_MS = 530L
 private const val QUICK_PASTE_LIFETIME_MS = 10L * 60 * 1000
 private const val KEY_CELL_HEIGHT_DP = 55
 private const val KEY_HORIZONTAL_INSET_DP = 1
@@ -204,6 +205,18 @@ class IceInputMethodService : InputMethodService() {
     private val thumbnailExecutor = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
         ArrayBlockingQueue<Runnable>(48), mediaThreadFactory, ThreadPoolExecutor.DiscardOldestPolicy())
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var mediaCaret: PreeditCaretSpan? = null
+    private val mediaCaretBlink = object : Runnable {
+        override fun run() {
+            val caret = mediaCaret ?: return
+            val view = mediaSearchText ?: return
+            // Stop while candidates cover the search bar; the next title update restarts it.
+            if (!mediaQueryEditing || !view.isShown) return
+            caret.visible = !caret.visible
+            view.invalidate()
+            mainHandler.postDelayed(this, CARET_BLINK_INTERVAL_MS)
+        }
+    }
     private var expandRequest = 0
     private var latestState: RimeProcessResult? = null
     private var symbols = false
@@ -264,6 +277,7 @@ class IceInputMethodService : InputMethodService() {
         emojiOpen = false
         dismissPreeditPreview()
         mainHandler.removeCallbacks(quickPasteExpiry)
+        mainHandler.removeCallbacks(mediaCaretBlink)
         appearancePreferences.unregisterOnSharedPreferenceChangeListener(appearanceListener)
         clipboardManager.removePrimaryClipChangedListener(clipboardListener)
         mygoExecutor.shutdownNow()
@@ -1139,8 +1153,9 @@ class IceInputMethodService : InputMethodService() {
             result.onSuccess { (previous, state) ->
                 if (searchingMedia) {
                     if (!mediaQueryEditing) return@onSuccess
-                    appendMediaQuery(previous + value)
+                    // Clear the pinyin first so the redraw doesn't show it after the committed text.
                     mediaPreedit = ""
+                    appendMediaQuery(previous + value)
                 } else {
                     if (previous.isNotEmpty()) currentInputConnection?.commitText(previous, 1)
                     editorComposing = false
@@ -1260,6 +1275,13 @@ class IceInputMethodService : InputMethodService() {
         preeditPopup?.dismiss()
     }
 
+    // Inserts a zero-width placeholder at index and draws the accent caret over it.
+    private fun SpannableStringBuilder.insertCaret(index: Int): PreeditCaretSpan =
+        PreeditCaretSpan(accent, dp(3), dp(2), dp(2)).also {
+            insert(index, "\u200b")
+            setSpan(it, index, index + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+
     private fun updatePreeditPreview(state: RimeProcessResult?) {
         val popup = preeditPopup ?: return
         val frame = inputFrame ?: return
@@ -1270,11 +1292,7 @@ class IceInputMethodService : InputMethodService() {
             return
         }
         val cursor = preeditCursorIndex(state!!, preedit).coerceIn(0, preedit.length)
-        val display = SpannableStringBuilder(preedit).apply {
-            insert(cursor, "\u200b")
-            setSpan(PreeditCaretSpan(accent, dp(3), dp(2), dp(2)),
-                cursor, cursor + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
+        val display = SpannableStringBuilder(preedit).apply { insertCaret(cursor) }
         preview.text = display
         preview.contentDescription = "目前輸入：$preedit"
         if (!frame.isAttachedToWindow || frame.width == 0) {
@@ -1949,6 +1967,17 @@ class IceInputMethodService : InputMethodService() {
         }
     }
 
+    // Hold the caret solid after each change and only blink once typing pauses, like a text field.
+    private fun restartMediaCaretBlink() {
+        mainHandler.removeCallbacks(mediaCaretBlink)
+        if (!mediaQueryEditing) {
+            mediaCaret = null
+            return
+        }
+        mediaCaret?.visible = true
+        mainHandler.postDelayed(mediaCaretBlink, CARET_BLINK_INTERVAL_MS)
+    }
+
     private fun showMediaToolbarTitle(title: String) {
         emojiCategoryScroll?.visibility = View.GONE
         val showMediaSearch = emojiTab == EmojiTab.GIF || emojiTab == EmojiTab.MYGO
@@ -1958,12 +1987,20 @@ class IceInputMethodService : InputMethodService() {
             val query = (if (emojiTab == EmojiTab.GIF) gifQuery else mygoQuery) +
                 if (mediaQueryEditing) mediaPreedit else ""
             mediaSearchButton?.contentDescription = "搜尋 $name"
+            val placeholder = "搜尋 $name"
             mediaSearchText?.apply {
-                text = query.ifBlank { "搜尋 $name" }
+                text = if (mediaQueryEditing) {
+                    // The caret sits after the query, or before the placeholder like an empty text field.
+                    SpannableStringBuilder(query).apply {
+                        mediaCaret = insertCaret(length)
+                        if (query.isBlank()) append(placeholder)
+                    }
+                } else query.ifBlank { placeholder }
                 setTextColor(if (query.isBlank()) muted else ink)
                 ellipsize = if (mediaQueryEditing) TextUtils.TruncateAt.START else TextUtils.TruncateAt.END
             }
         }
+        restartMediaCaretBlink()
         emojiTitle?.apply {
             visibility = if (showMediaSearch) View.GONE else View.VISIBLE
             text = title
@@ -3600,6 +3637,9 @@ class IceInputMethodService : InputMethodService() {
         private val linePx: Int,
         private val insetPx: Int
     ) : ReplacementSpan() {
+        // Toggled for blinking; keeps the span's width so text never shifts.
+        var visible = true
+
         override fun getSize(
             paint: Paint,
             text: CharSequence,
@@ -3619,6 +3659,7 @@ class IceInputMethodService : InputMethodService() {
             bottom: Int,
             paint: Paint
         ) {
+            if (!visible) return
             val previousColor = paint.color
             val previousStyle = paint.style
             paint.color = color
