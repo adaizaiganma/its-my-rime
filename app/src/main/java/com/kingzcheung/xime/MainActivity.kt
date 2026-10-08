@@ -118,6 +118,7 @@ class MainActivity : ComponentActivity() {
     private var spaceCursorSensitivity by mutableStateOf(SpaceCursorSettings.DEFAULT)
     private var quickPhrases by mutableStateOf(emptyList<QuickPhrase>())
     private var giphyKey by mutableStateOf("")
+    private var symbolKey by mutableStateOf(SymbolKeySettings.DEFAULT)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -128,6 +129,7 @@ class MainActivity : ComponentActivity() {
         spaceCursorSensitivity = SpaceCursorSettings.read(this)
         quickPhrases = QuickPhrases.entries(this)
         giphyKey = GiphySettings.userKey(this)
+        symbolKey = SymbolKeySettings.read(this)
         applySystemBars()
         setContent {
             val palette = appPalette(darkMode)
@@ -160,6 +162,7 @@ class MainActivity : ComponentActivity() {
                     spaceCursorSensitivity = spaceCursorSensitivity,
                     quickPhrases = quickPhrases,
                     giphyKey = giphyKey,
+                    symbolKey = symbolKey,
                     palette = palette,
                     onEnable = { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
                     onSelect = { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker() },
@@ -173,6 +176,14 @@ class MainActivity : ComponentActivity() {
                         AppearanceSettings.setDark(this, enabled)
                         darkMode = enabled
                         applySystemBars()
+                    },
+                    onSymbolKeySave = { config ->
+                        SymbolKeySettings.write(this, config)
+                        symbolKey = SymbolKeySettings.read(this)
+                    },
+                    onSymbolKeyReset = {
+                        SymbolKeySettings.reset(this)
+                        symbolKey = SymbolKeySettings.read(this)
                     },
                     onSpaceCursorSensitivityChange = { level ->
                         spaceCursorSensitivity = level
@@ -210,6 +221,7 @@ class MainActivity : ComponentActivity() {
         spaceCursorSensitivity = SpaceCursorSettings.read(this)
         quickPhrases = QuickPhrases.entries(this)
         giphyKey = GiphySettings.userKey(this)
+        symbolKey = SymbolKeySettings.read(this)
         applySystemBars()
     }
 
@@ -240,10 +252,13 @@ private fun SettingsScreen(
     spaceCursorSensitivity: Int,
     quickPhrases: List<QuickPhrase>,
     giphyKey: String,
+    symbolKey: SymbolKeyConfig,
     palette: AppPalette,
     onEnable: () -> Unit,
     onSelect: () -> Unit,
     onGiphyKeySave: (String) -> Unit,
+    onSymbolKeySave: (SymbolKeyConfig) -> Unit,
+    onSymbolKeyReset: () -> Unit,
     onRedeploy: () -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
     onSpaceCursorSensitivityChange: (Int) -> Unit,
@@ -481,6 +496,9 @@ private fun SettingsScreen(
                     }
                 }
             }
+            SettingsSection("符號快捷鍵", palette) {
+                SymbolKeyCard(symbolKey, onSymbolKeySave, onSymbolKeyReset, palette, fieldColors)
+            }
             Text("Rime × 霧凇拼音", Modifier.fillMaxWidth().padding(bottom = 10.dp),
                 textAlign = TextAlign.Center, color = palette.muted, fontSize = 12.sp)
         }
@@ -590,6 +608,80 @@ private fun GiphyKeyCard(savedKey: String, onSave: (String) -> Unit, palette: Ap
                     TextButton(onClick = { uriHandler.openUri("https://developers.giphy.com/dashboard/") }) {
                         Text("申請金鑰", fontSize = 12.sp)
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SymbolKeyCard(
+    config: SymbolKeyConfig,
+    onSave: (SymbolKeyConfig) -> Unit,
+    onReset: () -> Unit,
+    palette: AppPalette,
+    fieldColors: TextFieldColors
+) {
+    // Keyed on the saved config so the fields refresh after saving or restoring defaults.
+    var primary by rememberSaveable(config) { mutableStateOf(config.primary) }
+    var secondary by rememberSaveable(config) { mutableStateOf(config.secondary) }
+    var menuText by rememberSaveable(config) { mutableStateOf(SymbolKeySettings.menuText(config.menu)) }
+    val error = SymbolKeySettings.validationError(primary, secondary, menuText)
+    val draft = SymbolKeyConfig(SymbolKeySettings.normalize(primary), SymbolKeySettings.normalize(secondary),
+        SymbolKeySettings.parseMenu(menuText))
+    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("空白鍵右側的符號鍵：點一下輸入主要符號，上滑輸入副符號，長按可從選單挑選。",
+                fontSize = 13.sp, lineHeight = 19.sp, color = palette.muted)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(56.dp).background(palette.soft, RoundedCornerShape(10.dp))) {
+                    Text(draft.secondary, Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 7.dp),
+                        fontSize = 11.sp, color = palette.muted, fontFamily = UiFonts.display, maxLines = 1)
+                    Text(draft.primary, Modifier.align(Alignment.Center), fontSize = 22.sp,
+                        color = palette.text, fontFamily = UiFonts.display, maxLines = 1)
+                }
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    draft.menu.take(SymbolKeySettings.MAX_MENU).forEach { symbol ->
+                        Box(Modifier.size(32.dp).background(palette.soft, RoundedCornerShape(8.dp)),
+                            contentAlignment = Alignment.Center) {
+                            Text(symbol, fontSize = 15.sp, color = palette.text, fontFamily = UiFonts.display,
+                                maxLines = 1)
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = primary, onValueChange = { primary = it },
+                    label = { Text("主要符號") }, placeholder = { Text("點一下") },
+                    singleLine = true, isError = !SymbolKeySettings.isValidSymbol(draft.primary),
+                    modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), colors = fieldColors
+                )
+                OutlinedTextField(
+                    value = secondary, onValueChange = { secondary = it },
+                    label = { Text("副符號") }, placeholder = { Text("上滑") },
+                    singleLine = true, isError = !SymbolKeySettings.isValidSymbol(draft.secondary),
+                    modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), colors = fieldColors
+                )
+            }
+            OutlinedTextField(
+                value = menuText, onValueChange = { menuText = it },
+                label = { Text("長按選單") }, placeholder = { Text("例如 , . ? ! 、") },
+                supportingText = { Text("以空白分隔，最多 ${SymbolKeySettings.MAX_MENU} 個符號") },
+                singleLine = true, isError = !SymbolKeySettings.isValidMenu(menuText),
+                modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors
+            )
+            if (error != null) Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            Text("逗號、句號、問號等標點會依鍵盤的「全／半」設定自動顯示為全形或半形；「、」「《》」等中文符號則照原樣輸出。",
+                fontSize = 12.sp, lineHeight = 18.sp, color = palette.muted)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onReset, enabled = config != SymbolKeySettings.DEFAULT) { Text("恢復預設") }
+                Button(onClick = { onSave(draft) }, enabled = error == null && draft != config,
+                    shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = Color.White,
+                        disabledContainerColor = palette.soft, disabledContentColor = palette.muted)) {
+                    Text("儲存符號設定")
                 }
             }
         }

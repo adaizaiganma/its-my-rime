@@ -109,7 +109,8 @@ private data class KeyLayoutState(
     val fullWidth: Boolean,
     val dark: Boolean,
     val mediaEditing: Boolean,
-    val mediaTab: EmojiTab
+    val mediaTab: EmojiTab,
+    val symbolKey: SymbolKeyConfig
 )
 
 class IceInputMethodService : InputMethodService() {
@@ -226,6 +227,7 @@ class IceInputMethodService : InputMethodService() {
     private var chineseFullPunctuation = true
 
     private var englishFullPunctuation = false
+    private var symbolKey = SymbolKeySettings.DEFAULT
     private var traditional = false
     private var shiftState = ShiftState.OFF
     private var editorComposing = false
@@ -251,6 +253,13 @@ class IceInputMethodService : InputMethodService() {
     private val appearanceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == AppearanceSettings.DARK_MODE) refreshAppearance()
     }
+    // Symbols saved on the settings page apply even while the keyboard stays open on that page.
+    private val symbolKeyListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == null || SymbolKeySettings.isSymbolKeyPreference(key)) {
+            symbolKey = SymbolKeySettings.read(this)
+            renderKeys()
+        }
+    }
 
     private val statusObserver: (EngineStatus) -> Unit = { status ->
         if (!status.ready) caption?.text = status.message
@@ -262,6 +271,7 @@ class IceInputMethodService : InputMethodService() {
     override fun onCreate() {
         super.onCreate()
         appearancePreferences.registerOnSharedPreferenceChangeListener(appearanceListener)
+        inputPreferences.registerOnSharedPreferenceChangeListener(symbolKeyListener)
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         ClipboardHistory.startCleanup(this)
         captureClipboard()
@@ -279,6 +289,7 @@ class IceInputMethodService : InputMethodService() {
         mainHandler.removeCallbacks(quickPasteExpiry)
         mainHandler.removeCallbacks(mediaCaretBlink)
         appearancePreferences.unregisterOnSharedPreferenceChangeListener(appearanceListener)
+        inputPreferences.unregisterOnSharedPreferenceChangeListener(symbolKeyListener)
         clipboardManager.removePrimaryClipChangedListener(clipboardListener)
         mygoExecutor.shutdownNow()
         thumbnailExecutor.shutdownNow()
@@ -687,6 +698,7 @@ class IceInputMethodService : InputMethodService() {
         symbols = false
         ascii = false
         chineseFullPunctuation = inputPreferences.getBoolean("chinese_full_punctuation", true)
+        symbolKey = SymbolKeySettings.read(this)
         englishFullPunctuation = inputPreferences.getBoolean("english_full_punctuation", false)
         shiftState = ShiftState.OFF
         editorComposing = false
@@ -1314,10 +1326,6 @@ class IceInputMethodService : InputMethodService() {
         val scrollX = (preview.paint.measureText(preedit.substring(0, cursor)).roundToInt() - width / 2)
             .coerceAtLeast(0)
         preeditScroll?.post { preeditScroll?.scrollTo(scrollX, 0) }
-    }
-
-    private fun inputPunctuation(period: Boolean) {
-        commitLiteral(punctuationText(if (period) "." else ","))
     }
 
     private fun renderCandidates(state: RimeProcessResult?) {
@@ -2653,7 +2661,7 @@ class IceInputMethodService : InputMethodService() {
         val container = rows ?: return
         updatePunctuationWidthButton()
         val layout = KeyLayoutState(symbols, shiftState, ascii, fullWidthPunctuation,
-            darkMode, mediaQueryEditing, mediaQueryTab)
+            darkMode, mediaQueryEditing, mediaQueryTab, symbolKey)
         if (container.tag == layout) return
         container.tag = layout
         container.removeAllViews()
@@ -2710,7 +2718,7 @@ class IceInputMethodService : InputMethodService() {
                 "ENTER" -> "↵"
                 "SPACE" -> if (ascii) "En" else "中"
                 "MODE" -> if (symbols) "ABC" else "?123"
-                "PUNCT" -> punctuationText(",")
+                "PUNCT" -> punctuationText(symbolKey.primary)
                 "EMOJI" -> ""
                 "SHIFT" -> if (shiftState == ShiftState.LOCKED) "⇪" else "⇧"
                 else -> if (symbols && key.length == 1 && !key[0].isLetterOrDigit()) punctuationText(key) else key
@@ -2821,9 +2829,9 @@ class IceInputMethodService : InputMethodService() {
                 FrameLayout(this).apply {
                     background = keyBackground(keySurface)
                     elevation = 0f
-                    contentDescription = "${punctuationText(",")}，長按選擇或上滑輸入 ${punctuationText(".")}"
+                    contentDescription = "符號快捷鍵 ${punctuationText(symbolKey.primary)}，長按選擇或上滑輸入 ${punctuationText(symbolKey.secondary)}"
                     addView(view, FrameLayout.LayoutParams(-1, -1))
-                    addKeyHint(punctuationText("."))
+                    addKeyHint(punctuationText(symbolKey.secondary))
                     setOnTouchListener { touched, event -> handlePunctuationTouch(touched, event) }
                 }
             } else view
@@ -3513,10 +3521,12 @@ class IceInputMethodService : InputMethodService() {
                 val longPress = Runnable {
                     if (!gesture.cancelled && token == generation && view.isAttachedToWindow) {
                         gesture.held = true
-                        gesture.choice = 1
                         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        val choices = listOf(punctuationText(","), punctuationText("."))
-                        showChoicePopup(view, choices, gesture.choice)
+                        showChoicePopup(view, symbolKey.menu.map(::punctuationText), symbolMenuStart(),
+                            anchorSelected = true)
+                        // The popup may be pushed in from the keyboard edge, so pick what is under the finger.
+                        gesture.choice = holdChoiceAt(startX)
+                        updateHoldChoice(gesture.choice)
                     }
                 }
                 gesture = NumberKeyGesture(startX, startY, longPress)
@@ -3533,29 +3543,48 @@ class IceInputMethodService : InputMethodService() {
                         gesture.cancelled = true
                         gesture.swipeAlternate = true
                         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        showChoicePopup(view, listOf(punctuationText(".")), 0)
+                        showChoicePopup(view, listOf(punctuationText(symbolKey.secondary)), 0)
                     } else if ((abs(dx) > slop && abs(dx) > abs(dy)) || dy > slop) {
                         view.removeCallbacks(gesture.longPress)
                         gesture.cancelled = true
                     }
                 }
                 if (gesture.held && event.actionMasked != MotionEvent.ACTION_CANCEL) {
-                    gesture.choice = (1 + (dx / dp(48)).roundToInt()).coerceIn(0, holdValues.lastIndex)
-                    updateHoldChoice(gesture.choice)
+                    val choice = holdChoiceAt(event.rawX)
+                    if (choice != gesture.choice) {
+                        gesture.choice = choice
+                        updateHoldChoice(choice)
+                    }
                 }
                 if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                     view.removeCallbacks(gesture.longPress)
                     view.tag = null
                     holdPopup?.visibility = View.GONE
                     if (event.actionMasked == MotionEvent.ACTION_UP) {
-                        if (gesture.swipeAlternate) inputPunctuation(period = true)
+                        if (gesture.swipeAlternate) commitLiteral(punctuationText(symbolKey.secondary))
                         else if (gesture.held) holdValues.getOrNull(gesture.choice)?.let(::commitLiteral)
-                        else if (!gesture.cancelled) inputPunctuation(period = false)
+                        else if (!gesture.cancelled) commitLiteral(punctuationText(symbolKey.primary))
                     }
                 }
             }
         }
         return true
+    }
+
+    // Long press opens on the swipe-up symbol when the menu has it, as the original key preselected the period.
+    private fun symbolMenuStart(): Int = symbolKey.menu.indexOf(symbolKey.secondary).takeIf { it >= 0 }
+        ?: symbolKey.menu.indexOf(symbolKey.primary).coerceAtLeast(0)
+
+    /** Index of the single-row hold popup option under a screen x coordinate. */
+    private fun holdChoiceAt(rawX: Float): Int {
+        val popup = holdPopup ?: return 0
+        val frame = inputFrame ?: return 0
+        val params = popup.layoutParams as? FrameLayout.LayoutParams ?: return 0
+        if (holdValues.isEmpty()) return 0
+        val origin = IntArray(2).also(frame::getLocationOnScreen)
+        val optionWidth = (params.width - popup.paddingLeft - popup.paddingRight).toFloat() / holdValues.size
+        val x = rawX - origin[0] - params.leftMargin - popup.paddingLeft
+        return (x / optionWidth).toInt().coerceIn(0, holdValues.lastIndex)
     }
 
     private fun initialHoldChoice(key: String): Int = when (key.lowercase()) {
