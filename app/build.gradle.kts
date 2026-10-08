@@ -20,8 +20,8 @@ android {
         applicationId = "dev.rime.icekeyboard"
         minSdk = 28
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         buildConfigField("String", "GIPHY_SDK_KEY", "\"$giphySdkKey\"")
     }
