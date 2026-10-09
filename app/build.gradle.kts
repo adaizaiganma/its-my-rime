@@ -46,6 +46,10 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // The Kotlin API only loads libsherpa-onnx-jni.so (which needs libonnxruntime.so); the C/C++ APIs are unused.
+        jniLibs.excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
+        // Compress native libraries: onnxruntime would otherwise add ~50 MB uncompressed to the download.
+        jniLibs.useLegacyPackaging = true
     }
 }
 
@@ -59,4 +63,5 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
+    implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:v1.13.8")
 }

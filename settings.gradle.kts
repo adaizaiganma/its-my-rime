@@ -11,6 +11,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Only the official sherpa-onnx speech recognition AAR is resolved from JitPack.
+        maven("https://jitpack.io") {
+            content { includeGroup("com.github.k2-fsa.sherpa-onnx") }
+        }
     }
 }
 

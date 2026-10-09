@@ -1,0 +1,133 @@
+# Rime schema
+# encoding: utf-8
+#
+# 注音（大千式）方案，共用霧凇拼音詞庫。
+# 注音與拼音的拼寫運算改寫自 rime/rime-bopomofo 的 zhuyin.yaml（LGPL-3.0）：
+# https://github.com/rime/rime-bopomofo
+#
+# 霧凇詞庫不含聲調，因此聲調鍵 ˊˇˋ˙ 作為音節分隔使用，不參與篩選；
+# 空白鍵上屏首選，Enter 上屏注音字串。
+
+schema:
+  schema_id: bopomofo_ice
+  name: 注音
+  version: "2026-10-09"
+  author:
+    - 佛振 <chen.sst@gmail.com>  # rime-bopomofo 拼寫運算
+  description: |
+    大千式注音，詞庫與詞頻沿用霧凇拼音。
+
+switches:
+  - name: ascii_mode
+    states: [ 中, Ａ ]
+  - name: traditionalization
+    states: [ 简, 繁 ]
+  - name: emoji
+    states: [ 💀, 😄 ]
+    reset: 1
+  - name: full_shape
+    states: [ 半角, 全角 ]
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+  filters:
+    - simplifier@emoji
+    - simplifier@traditionalize
+    - uniquifier
+
+# 大千式鍵位：ㄅㄉˇˋㄓˊ˙ㄚㄞㄢㄦ／ㄆㄊㄍㄐㄔㄗㄧㄛㄟㄣ／ㄇㄋㄎㄑㄕㄘㄨㄜㄠㄤ／ㄈㄌㄏㄒㄖㄙㄩㄝㄡㄥ
+speller:
+  alphabet: "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-6347"
+  initials: "1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-"
+  # 第一位空白是自動分隔符；聲調鍵 6 3 4 7 與單引號可手動分隔音節。
+  delimiter: " '6347"
+  algebra:
+    # 與霧凇拼音一致，取消單字母音節的獨佔，讓簡拼正常運作。
+    - erase/^hm$/
+    - erase/^m$/
+    - erase/^n$/
+    - erase/^ng$/
+    - xform/^([nl])ue$/$1ve/
+    # pinyin_to_zhuyin
+    - xform/iu/iou/
+    - xform/ui/uei/
+    - xform/ong/ung/
+    - xform/^yi?/i/
+    - xform/^wu?/u/
+    - xform/iu/v/
+    - xform/^([jqx])u/$1v/
+    - xform/([iuv])n/$1en/
+    - xform/^zhi?/Z/
+    - xform/^chi?/C/
+    - xform/^shi?/S/
+    - xform/^([zcsr])i/$1/
+    - xform/ai/A/
+    - xform/ei/I/
+    - xform/ao/O/
+    - xform/ou/U/
+    - xform/ang/K/
+    - xform/eng/G/
+    - xform/an/M/
+    - xform/en/N/
+    - xform/er/R/
+    - xform/eh/E/
+    - xform/([iv])e/$1E/
+    # 聲母簡拼，例如 ㄋㄏ → 你好
+    - abbrev/^([bpmfdtnlgkhjqxZCSrzcs]).+$/$1/
+    # keymap_bopomofo
+    - 'xlit|bpmfdtnlgkhjqxZCSrzcsiuvaoeEAIOUMNKGR|1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-|'
+
+translator:
+  dictionary: rime_ice
+  prism: bopomofo_ice
+  enable_word_completion: true
+  initial_quality: 1.2
+  preedit_format:
+    - "xlit|1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-6347'|ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦˊˇˋ˙ |"
+  comment_format:
+    - xform/.*//
+
+emoji:
+  option_name: emoji
+  opencc_config: emoji.json
+  inherit_comment: false
+
+traditionalize:
+  option_name: traditionalization
+  opencc_config: s2tw.json
+  tips: none
+
+punctuator:
+  __include: default:/punctuator
+  full_shape:
+    __include: default:/punctuator/full_shape
+  half_shape:
+    __include: default:/punctuator/half_shape
+
+# 不匯入預設樣式：網址等規則會把注音鍵位誤判成英文。
+recognizer:
+  patterns: {}
+
+editor:
+  bindings:
+    space: confirm
+    Return: commit_script_text
+    BackSpace: revert
+    Delete: delete
+    Escape: cancel

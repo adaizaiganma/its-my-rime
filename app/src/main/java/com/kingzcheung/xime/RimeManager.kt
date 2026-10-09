@@ -14,8 +14,13 @@ data class EngineStatus(val ready: Boolean, val busy: Boolean, val message: Stri
 /** One worker owns all calls to librime so deployment and typing never race. */
 object RimeManager {
     private const val TAG = "RimeManager"
-    private const val SCHEMA = "rime_ice"
     private const val CONVERSION_ASSETS_VERSION = "s2tw-opencc-1.1.9-1"
+    // Bump when a schema file is added or changed so existing installs copy it and redeploy
+    // even when the app's versionCode is unchanged (debug builds).
+    private const val SCHEMA_ASSETS_VERSION = "bopomofo-ice-1"
+    private val SCHEMA_FILES = listOf("rime_ice.schema.yaml", "bopomofo_ice.schema.yaml")
+    private val SCHEMA_LIST = "patch:\n  schema_list:\n" +
+        InputScheme.entries.joinToString("") { "    - schema: ${it.schemaId}\n" }
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "rime-worker").apply { isDaemon = true }
     }
@@ -55,6 +60,8 @@ object RimeManager {
                 val conversionMarker = File(shared, ".conversion-assets-version")
                 val assetsChanged = assetsMarker.takeIf { it.exists() }?.readText() != version
                 val conversionChanged = conversionMarker.takeIf { it.exists() }?.readText() != CONVERSION_ASSETS_VERSION
+                val schemaMarker = File(shared, ".schema-assets-version")
+                val schemasChanged = schemaMarker.takeIf { it.exists() }?.readText() != SCHEMA_ASSETS_VERSION
                 if (assetsChanged) {
                     copyAssets(app, "rime", shared)
                     assetsMarker.writeText(version)
@@ -67,27 +74,30 @@ object RimeManager {
                         "opencc/TWVariants.txt"
                     ).forEach { path -> copyAssets(app, "rime/$path", File(shared, path)) }
                 }
-                val custom = File(user, "default.custom.yaml")
-                if (!custom.exists()) {
-                    custom.writeText("patch:\n  schema_list:\n    - schema: rime_ice\n")
+                if (schemasChanged && !assetsChanged) {
+                    SCHEMA_FILES.forEach { path -> copyAssets(app, "rime/$path", File(shared, path)) }
                 }
+                // Every selectable scheme must be in schema_list to be compiled at deployment.
+                val custom = File(user, "default.custom.yaml")
+                if (custom.takeIf { it.exists() }?.readText() != SCHEMA_LIST) custom.writeText(SCHEMA_LIST)
 
                 val quickPhrasesChanged = QuickPhrases.syncRimeFile(app, shared, user)
 
                 setStatus(false, true, "啟動 Rime 引擎…")
                 engine.initialize(user.absolutePath, shared.absolutePath)
                 check(RimeEngine.isInitialized()) { "Rime 引擎初始化失敗" }
-                if (assetsChanged || conversionChanged || quickPhrasesChanged ||
+                if (assetsChanged || conversionChanged || schemasChanged || quickPhrasesChanged ||
                     deploymentMarker.takeIf { it.exists() }?.readText() != version) {
                     setStatus(false, true, "首次部署詞庫，請稍候…")
                     check(engine.deploy()) { "霧凇拼音部署失敗" }
                     deploymentMarker.writeText(version)
                     conversionMarker.writeText(CONVERSION_ASSETS_VERSION)
+                    schemaMarker.writeText(SCHEMA_ASSETS_VERSION)
                 }
                 check(engine.ensureSession()) { "Rime 無法建立輸入會話" }
-                check(engine.switchSchema(SCHEMA)) { "找不到霧凇拼音方案" }
-                engine.setOption("ascii_mode", false)
-                setStatus(true, false, "霧凇拼音已就緒")
+                val scheme = InputSchemeSettings.read(app)
+                selectScheme(scheme)
+                setStatus(true, false, "${scheme.label}已就緒")
             } catch (error: Throwable) {
                 Log.e(TAG, "Rime startup failed", error)
                 setStatus(false, false, error.message ?: "Rime 啟動失敗")
@@ -106,8 +116,7 @@ object RimeManager {
                 val deployed = incremental && runCatching { engine.deployIncremental() }.getOrDefault(false)
                 check(deployed || engine.deploy()) { "重新部署失敗" }
                 check(engine.ensureSession()) { "Rime 無法建立輸入會話" }
-                check(engine.switchSchema(SCHEMA)) { "找不到霧凇拼音方案" }
-                engine.setOption("ascii_mode", false)
+                selectScheme(InputSchemeSettings.read(app))
                 val version = app.packageManager.getPackageInfo(app.packageName, 0).longVersionCode.toString()
                 File(app.filesDir, "rime-user/.deployed-version").writeText(version)
                 setStatus(true, false, "重新部署完成")
@@ -116,6 +125,23 @@ object RimeManager {
                 setStatus(false, false, error.message ?: "重新部署失敗")
             }
         }
+    }
+
+    /** Switches the shared Rime session to [scheme]; the keyboard picks its layout from the same setting. */
+    internal fun switchScheme(context: Context, scheme: InputScheme) {
+        ensureReady(context)
+        worker.execute {
+            if (!status.ready) return@execute
+            runCatching { selectScheme(scheme) }.onFailure { error ->
+                Log.e(TAG, "Schema switch failed", error)
+                setStatus(true, false, error.message ?: "切換輸入方案失敗")
+            }
+        }
+    }
+
+    private fun selectScheme(scheme: InputScheme) {
+        check(engine.switchSchema(scheme.schemaId)) { "找不到${scheme.label}方案" }
+        engine.setOption("ascii_mode", false)
     }
 
     fun <T> run(context: Context, action: (RimeEngine) -> T, callback: (Result<T>) -> Unit) {

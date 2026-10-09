@@ -1,13 +1,18 @@
 package com.kingzcheung.xime
 
 import android.content.ComponentName
+import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +39,7 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Visibility
@@ -47,6 +53,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -66,6 +73,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -119,6 +138,15 @@ class MainActivity : ComponentActivity() {
     private var quickPhrases by mutableStateOf(emptyList<QuickPhrase>())
     private var giphyKey by mutableStateOf("")
     private var symbolKey by mutableStateOf(SymbolKeySettings.DEFAULT)
+    private var inputScheme by mutableStateOf(InputScheme.PINYIN)
+    private var voiceModel by mutableStateOf<VoiceModel.State>(VoiceModel.State.Missing)
+    private var micGranted by mutableStateOf(false)
+    private var micAsked = false
+    private val voiceModelObserver: (VoiceModel.State) -> Unit = { voiceModel = it }
+    private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        micGranted = granted
+        micAsked = true
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -130,6 +158,8 @@ class MainActivity : ComponentActivity() {
         quickPhrases = QuickPhrases.entries(this)
         giphyKey = GiphySettings.userKey(this)
         symbolKey = SymbolKeySettings.read(this)
+        inputScheme = InputSchemeSettings.read(this)
+        VoiceModel.observe(voiceModelObserver)
         applySystemBars()
         setContent {
             val palette = appPalette(darkMode)
@@ -163,6 +193,14 @@ class MainActivity : ComponentActivity() {
                     quickPhrases = quickPhrases,
                     giphyKey = giphyKey,
                     symbolKey = symbolKey,
+                    inputScheme = inputScheme,
+                    onInputSchemeChange = { scheme ->
+                        inputScheme = scheme
+                        InputSchemeSettings.write(this, scheme)
+                        RimeManager.switchScheme(this, scheme)
+                    },
+                    voiceModel = voiceModel,
+                    micGranted = micGranted,
                     palette = palette,
                     onEnable = { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
                     onSelect = { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker() },
@@ -181,6 +219,10 @@ class MainActivity : ComponentActivity() {
                         SymbolKeySettings.write(this, config)
                         symbolKey = SymbolKeySettings.read(this)
                     },
+                    onVoiceDownload = { VoiceModel.download(this) },
+                    onVoiceCancel = { VoiceModel.cancel() },
+                    onVoiceDelete = { VoiceModel.delete(this) },
+                    onMicPermission = { requestMicPermission() },
                     onSymbolKeyReset = {
                         SymbolKeySettings.reset(this)
                         symbolKey = SymbolKeySettings.read(this)
@@ -222,7 +264,24 @@ class MainActivity : ComponentActivity() {
         quickPhrases = QuickPhrases.entries(this)
         giphyKey = GiphySettings.userKey(this)
         symbolKey = SymbolKeySettings.read(this)
+        inputScheme = InputSchemeSettings.read(this)
+        VoiceModel.refresh(this)
+        micGranted = VoiceEngine.hasMicPermission(this)
         applySystemBars()
+    }
+
+    override fun onDestroy() {
+        VoiceModel.removeObserver(voiceModelObserver)
+        super.onDestroy()
+    }
+
+    // After a denial with "don't ask again" the system dialog no longer appears, so open app settings instead.
+    private fun requestMicPermission() {
+        if (micAsked && !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+        } else {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     private fun applySystemBars() {
@@ -244,6 +303,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SettingsScreen(
     setup: SetupState,
@@ -253,12 +313,20 @@ private fun SettingsScreen(
     quickPhrases: List<QuickPhrase>,
     giphyKey: String,
     symbolKey: SymbolKeyConfig,
+    inputScheme: InputScheme,
+    onInputSchemeChange: (InputScheme) -> Unit,
     palette: AppPalette,
     onEnable: () -> Unit,
     onSelect: () -> Unit,
     onGiphyKeySave: (String) -> Unit,
     onSymbolKeySave: (SymbolKeyConfig) -> Unit,
     onSymbolKeyReset: () -> Unit,
+    voiceModel: VoiceModel.State,
+    micGranted: Boolean,
+    onVoiceDownload: () -> Unit,
+    onVoiceCancel: () -> Unit,
+    onVoiceDelete: () -> Unit,
+    onMicPermission: () -> Unit,
     onRedeploy: () -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
     onSpaceCursorSensitivityChange: (Int) -> Unit,
@@ -277,230 +345,292 @@ private fun SettingsScreen(
         focusedLabelColor = palette.accent, unfocusedLabelColor = palette.muted,
         cursorColor = palette.accent
     )
+    var tab by rememberSaveable { mutableStateOf(SettingsTab.START) }
     Box(Modifier.fillMaxSize().background(palette.page).safeDrawingPadding().imePadding()) {
-        Column(
-            modifier = Modifier.widthIn(max = 640.dp).fillMaxSize().align(Alignment.TopCenter)
-                .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier.size(40.dp).background(palette.soft, RoundedCornerShape(8.dp)),
-                    contentAlignment = Alignment.Center
-                ) { Icon(painterResource(R.drawable.ic_brand_mark), contentDescription = null, tint = palette.accent,
-                    modifier = Modifier.size(32.dp)) }
-                Column(Modifier.padding(start = 12.dp)) {
-                    Text(stringResource(R.string.app_name), fontSize = 24.sp, fontFamily = UiFonts.display,
-                        fontWeight = FontWeight.Normal, letterSpacing = (-0.3).sp, color = palette.text)
-                    Text("Rime · 離線拼音輸入", fontSize = 12.sp, color = palette.muted)
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("每一次輸入，都更自在。", color = palette.text, fontSize = 28.sp,
-                    lineHeight = 34.sp, fontFamily = UiFonts.display,
-                    letterSpacing = (-0.5).sp, fontWeight = FontWeight.Normal)
-                Text("在你的裝置上，整理自己的輸入習慣。",
-                    color = palette.muted, fontSize = 14.sp, lineHeight = 21.sp)
-            }
-
-            SettingsSection("開始使用", palette) {
-                SetupCard("啟用輸入法", "在系統設定中開啟 It's My Rime", setup.enabled, onEnable, palette)
-                SetupCard("設為目前鍵盤", "從輸入法清單選擇 It's My Rime", setup.selected, onSelect, palette)
-                GiphyKeyCard(giphyKey, onGiphyKeySave, palette, fieldColors)
-            }
-
-            SettingsSection("試試手感", palette) {
-                TypingTestCard(palette, fieldColors)
-            }
-
-            SettingsSection("常用字", palette) {
-                Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("輸入縮寫，從候選欄選擇常用內容。", fontSize = 13.sp, color = palette.muted)
-                        OutlinedTextField(
-                            value = shortcutCode,
-                            onValueChange = { shortcutCode = it; shortcutError = null },
-                            label = { Text("縮寫") },
-                            placeholder = { Text("例如 id") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
-                            colors = fieldColors, isError = shortcutError != null
-                        )
-                        OutlinedTextField(
-                            value = shortcutText,
-                            onValueChange = { shortcutText = it; shortcutError = null },
-                            label = { Text("輸出內容") },
-                            placeholder = { Text("例如 E14135065") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
-                            colors = fieldColors, isError = shortcutError != null
-                        )
-                        if (shortcutError != null) {
-                            Text(shortcutError.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            if (editingShortcut != null) {
-                                TextButton(onClick = {
-                                    editingShortcut = null
-                                    shortcutCode = ""
-                                    shortcutText = ""
-                                    shortcutError = null
-                                }) { Text("取消") }
-                            }
-                            Button(onClick = {
-                                val error = onQuickPhraseSave(editingShortcut, shortcutCode, shortcutText)
-                                shortcutError = error
-                                if (error == null) {
-                                    editingShortcut = null
-                                    shortcutCode = ""
-                                    shortcutText = ""
+        Column(Modifier.fillMaxSize()) {
+            // Tabs crossfade; each one starts scrolled to the top.
+            Crossfade(targetState = tab, modifier = Modifier.weight(1f).fillMaxWidth(),
+                animationSpec = tween(180), label = "settings-tab") { current ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                    Column(
+                        modifier = Modifier.widthIn(max = 640.dp).fillMaxSize()
+                            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(24.dp)
+                    ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier.size(40.dp).background(palette.soft, RoundedCornerShape(8.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) { Icon(painterResource(R.drawable.ic_brand_mark), contentDescription = null, tint = palette.accent,
+                                    modifier = Modifier.size(32.dp)) }
+                                Column(Modifier.padding(start = 12.dp)) {
+                                    Text(stringResource(R.string.app_name), fontSize = 24.sp, fontFamily = UiFonts.display,
+                                        fontWeight = FontWeight.Normal, letterSpacing = (-0.3).sp, color = palette.text)
+                                    Text("Rime · 離線拼音輸入", fontSize = 12.sp, color = palette.muted)
                                 }
-                            }, enabled = shortcutCode.isNotBlank() && shortcutText.isNotBlank(),
-                                shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = Color.White,
-                                    disabledContainerColor = palette.soft, disabledContentColor = palette.muted)) {
-                                Text(if (editingShortcut == null) "新增常用字" else "儲存修改")
                             }
-                        }
-                        if (quickPhrases.isNotEmpty()) {
-                            HorizontalDivider(color = palette.outline)
-                            Text("已儲存 ${quickPhrases.size} 筆", fontSize = 12.sp, color = palette.muted)
-                            quickPhrases.forEach { phrase ->
-                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Text(phrase.code, fontFamily = FontFamily.Monospace, fontSize = 13.sp,
-                                            color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(phrase.text, color = palette.text, maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis, fontSize = 14.sp, lineHeight = 21.sp)
-                                    }
-                                    IconButton(onClick = {
-                                        editingShortcut = phrase.code
-                                        shortcutCode = phrase.code
-                                        shortcutText = phrase.text
-                                        shortcutError = null
-                                    }) { Icon(Icons.Outlined.Edit, contentDescription = "編輯 ${phrase.code}",
-                                        tint = palette.muted, modifier = Modifier.size(20.dp)) }
-                                    IconButton(onClick = {
-                                        onQuickPhraseDelete(phrase.code)
-                                        if (editingShortcut == phrase.code) {
-                                            editingShortcut = null
-                                            shortcutCode = ""
-                                            shortcutText = ""
+
+                        when (current) {
+                            SettingsTab.START -> {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("每一次輸入，都更自在。", color = palette.text, fontSize = 28.sp,
+                                        lineHeight = 34.sp, fontFamily = UiFonts.display,
+                                        letterSpacing = (-0.5).sp, fontWeight = FontWeight.Normal)
+                                    Text("在你的裝置上，整理自己的輸入習慣。",
+                                        color = palette.muted, fontSize = 14.sp, lineHeight = 21.sp)
+                                }
+
+                                SettingsSection("開始使用", palette) {
+                                    SetupCard("啟用輸入法", "在系統設定中開啟 It's My Rime", setup.enabled, onEnable, palette)
+                                    SetupCard("設為目前鍵盤", "從輸入法清單選擇 It's My Rime", setup.selected, onSelect, palette)
+                                }
+
+                                SettingsSection("試試手感", palette) {
+                                    TypingTestCard(palette, fieldColors)
+                                }
+                            }
+                            SettingsTab.INPUT -> {
+                                SettingsSection("輸入方案", palette) {
+                                    InputSchemeCard(inputScheme, onInputSchemeChange, palette)
+                                }
+
+                                SettingsSection("符號快捷鍵", palette) {
+                                    SymbolKeyCard(symbolKey, onSymbolKeySave, onSymbolKeyReset, palette, fieldColors)
+                                }
+
+                                SettingsSection("常用字", palette) {
+                                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+                                        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                            Text("輸入縮寫，從候選欄選擇常用內容。", fontSize = 13.sp, color = palette.muted)
+                                            OutlinedTextField(
+                                                value = shortcutCode,
+                                                onValueChange = { shortcutCode = it; shortcutError = null },
+                                                label = { Text("縮寫") },
+                                                placeholder = { Text("例如 id") },
+                                                singleLine = true,
+                                                modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+                                                colors = fieldColors, isError = shortcutError != null
+                                            )
+                                            OutlinedTextField(
+                                                value = shortcutText,
+                                                onValueChange = { shortcutText = it; shortcutError = null },
+                                                label = { Text("輸出內容") },
+                                                placeholder = { Text("例如 E14135065") },
+                                                singleLine = true,
+                                                modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+                                                colors = fieldColors, isError = shortcutError != null
+                                            )
+                                            if (shortcutError != null) {
+                                                Text(shortcutError.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                                            }
+                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically) {
+                                                if (editingShortcut != null) {
+                                                    TextButton(onClick = {
+                                                        editingShortcut = null
+                                                        shortcutCode = ""
+                                                        shortcutText = ""
+                                                        shortcutError = null
+                                                    }) { Text("取消") }
+                                                }
+                                                Button(onClick = {
+                                                    val error = onQuickPhraseSave(editingShortcut, shortcutCode, shortcutText)
+                                                    shortcutError = error
+                                                    if (error == null) {
+                                                        editingShortcut = null
+                                                        shortcutCode = ""
+                                                        shortcutText = ""
+                                                    }
+                                                }, enabled = shortcutCode.isNotBlank() && shortcutText.isNotBlank(),
+                                                    shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                                    colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = Color.White,
+                                                        disabledContainerColor = palette.soft, disabledContentColor = palette.muted)) {
+                                                    Text(if (editingShortcut == null) "新增常用字" else "儲存修改")
+                                                }
+                                            }
+                                            if (quickPhrases.isNotEmpty()) {
+                                                HorizontalDivider(color = palette.outline)
+                                                Text("已儲存 ${quickPhrases.size} 筆", fontSize = 12.sp, color = palette.muted)
+                                                quickPhrases.forEach { phrase ->
+                                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                            Text(phrase.code, fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+                                                                color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                            Text(phrase.text, color = palette.text, maxLines = 2,
+                                                                overflow = TextOverflow.Ellipsis, fontSize = 14.sp, lineHeight = 21.sp)
+                                                        }
+                                                        IconButton(onClick = {
+                                                            editingShortcut = phrase.code
+                                                            shortcutCode = phrase.code
+                                                            shortcutText = phrase.text
+                                                            shortcutError = null
+                                                        }) { Icon(Icons.Outlined.Edit, contentDescription = "編輯 ${phrase.code}",
+                                                            tint = palette.muted, modifier = Modifier.size(20.dp)) }
+                                                        IconButton(onClick = {
+                                                            onQuickPhraseDelete(phrase.code)
+                                                            if (editingShortcut == phrase.code) {
+                                                                editingShortcut = null
+                                                                shortcutCode = ""
+                                                                shortcutText = ""
+                                                            }
+                                                            shortcutError = null
+                                                        }) { Icon(Icons.Outlined.DeleteOutline, contentDescription = "刪除 ${phrase.code}",
+                                                            tint = palette.muted, modifier = Modifier.size(20.dp)) }
+                                                    }
+                                                }
+                                            }
+                                            Text("儲存後會自動重新部署 Rime；常用字適用於中文輸入模式。",
+                                                fontSize = 12.sp, color = palette.muted)
                                         }
-                                        shortcutError = null
-                                    }) { Icon(Icons.Outlined.DeleteOutline, contentDescription = "刪除 ${phrase.code}",
-                                        tint = palette.muted, modifier = Modifier.size(20.dp)) }
+                                    }
+                                }
+
+                                SettingsSection("鍵盤操作", palette) {
+                                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+                                        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Box(Modifier.size(36.dp).background(palette.soft, RoundedCornerShape(8.dp)),
+                                                    contentAlignment = Alignment.Center) {
+                                                    Icon(Icons.Outlined.Settings, contentDescription = null, tint = palette.muted,
+                                                        modifier = Modifier.size(20.dp))
+                                                }
+                                                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                                    Text("空白鍵滑動靈敏度", fontSize = 16.sp, fontWeight = FontWeight.Medium,
+                                                        color = palette.text)
+                                                    Text("目前：${listOf("較低", "偏低", "標準", "偏高", "較高")[spaceCursorSensitivity - 1]}",
+                                                        fontSize = 12.sp, color = palette.muted)
+                                                }
+                                            }
+                                            Spacer(Modifier.height(12.dp))
+                                            Slider(
+                                                value = spaceCursorSensitivity.toFloat(),
+                                                onValueChange = { onSpaceCursorSensitivityChange(it.roundToInt()) },
+                                                valueRange = 1f..5f,
+                                                steps = 3,
+                                                colors = SliderDefaults.colors(thumbColor = palette.button, activeTrackColor = palette.button,
+                                                    inactiveTrackColor = palette.outline, activeTickColor = Color.White,
+                                                    inactiveTickColor = palette.muted)
+                                            )
+                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                                Text("滑動較遠才移動", fontSize = 12.sp, color = palette.muted)
+                                                Text("輕滑即可移動", fontSize = 12.sp, color = palette.muted)
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        }
-                        Text("儲存後會自動重新部署 Rime；常用字適用於中文輸入模式。",
-                            fontSize = 12.sp, color = palette.muted)
-                    }
-                }
-            }
+                            SettingsTab.FEATURES -> {
+                                SettingsSection("語音輸入", palette) {
+                                    VoiceInputCard(voiceModel, micGranted, onVoiceDownload, onVoiceCancel, onVoiceDelete,
+                                        onMicPermission, palette)
+                                }
 
-            SettingsSection("Rime 引擎", palette) {
-                Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.hero)) {
-                    Column(Modifier.fillMaxWidth().padding(20.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Outlined.Settings, contentDescription = null, tint = palette.heroDetail,
-                                modifier = Modifier.size(20.dp))
-                            Text(stringResource(R.string.brand_caption), fontSize = 20.sp, fontFamily = UiFonts.display,
-                                fontWeight = FontWeight.Normal, color = Color(UiTheme.dark.ink))
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (engine.busy) {
-                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp,
-                                    color = Color(UiTheme.dark.accent))
-                            } else {
-                                Icon(if (engine.ready) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber,
-                                    contentDescription = null,
-                                    tint = Color(if (engine.ready) UiTheme.dark.success else UiTheme.dark.warning),
-                                    modifier = Modifier.size(18.dp))
+                                SettingsSection("GIF 搜尋", palette) {
+                                    GiphyKeyCard(giphyKey, onGiphyKeySave, palette, fieldColors)
+                                }
                             }
-                            Text(engine.message, fontSize = 14.sp, lineHeight = 21.sp, color = palette.heroDetail,
-                                modifier = Modifier.weight(1f))
-                        }
-                        Spacer(Modifier.height(16.dp))
-                        Button(
-                            onClick = onRedeploy,
-                            enabled = !engine.busy,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = Color.White,
-                                disabledContainerColor = Color(UiTheme.dark.inset), disabledContentColor = palette.heroDetail)
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Text("重新部署 Rime", fontWeight = FontWeight.Medium)
+                            SettingsTab.MORE -> {
+                                SettingsSection("外觀", palette) {
+                                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+                                        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Box(Modifier.size(36.dp).background(palette.soft, RoundedCornerShape(8.dp)),
+                                                contentAlignment = Alignment.Center) {
+                                                Icon(Icons.Outlined.DarkMode, contentDescription = null, tint = palette.muted,
+                                                    modifier = Modifier.size(20.dp))
+                                            }
+                                            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                                Text("深色模式", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = palette.text)
+                                                Text("設定頁與鍵盤使用暖色深色配色", fontSize = 12.sp, color = palette.muted)
+                                            }
+                                            Switch(checked = darkMode, onCheckedChange = onDarkModeChange,
+                                                colors = SwitchDefaults.colors(checkedTrackColor = palette.button,
+                                                    checkedThumbColor = Color(UiTheme.dark.ink), uncheckedTrackColor = palette.soft,
+                                                    uncheckedThumbColor = palette.muted, uncheckedBorderColor = palette.outline))
+                                        }
+                                    }
+                                }
+
+                                SettingsSection("Rime 引擎", palette) {
+                                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.hero)) {
+                                        Column(Modifier.fillMaxWidth().padding(20.dp)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                Icon(Icons.Outlined.Settings, contentDescription = null, tint = palette.heroDetail,
+                                                    modifier = Modifier.size(20.dp))
+                                                Text(stringResource(R.string.brand_caption), fontSize = 20.sp, fontFamily = UiFonts.display,
+                                                    fontWeight = FontWeight.Normal, color = Color(UiTheme.dark.ink))
+                                            }
+                                            Spacer(Modifier.height(12.dp))
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                if (engine.busy) {
+                                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp,
+                                                        color = Color(UiTheme.dark.accent))
+                                                } else {
+                                                    Icon(if (engine.ready) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber,
+                                                        contentDescription = null,
+                                                        tint = Color(if (engine.ready) UiTheme.dark.success else UiTheme.dark.warning),
+                                                        modifier = Modifier.size(18.dp))
+                                                }
+                                                Text(engine.message, fontSize = 14.sp, lineHeight = 21.sp, color = palette.heroDetail,
+                                                    modifier = Modifier.weight(1f))
+                                            }
+                                            Spacer(Modifier.height(16.dp))
+                                            Button(
+                                                onClick = onRedeploy,
+                                                enabled = !engine.busy,
+                                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = Color.White,
+                                                    disabledContainerColor = Color(UiTheme.dark.inset), disabledContentColor = palette.heroDetail)
+                                            ) {
+                                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                                    Text("重新部署 Rime", fontWeight = FontWeight.Medium)
+                                                }
+                                            }
+                                            Spacer(Modifier.height(8.dp))
+                                            Text("重新編譯目前的設定與詞庫。", color = palette.heroDetail, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+
+                                Text("Rime × 霧凇拼音", Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                                    textAlign = TextAlign.Center, color = palette.muted, fontSize = 12.sp)
                             }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text("重新編譯目前的設定與詞庫。", color = palette.heroDetail, fontSize = 12.sp)
-                    }
-                }
-            }
-            SettingsSection("外觀", palette) {
-                Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(36.dp).background(palette.soft, RoundedCornerShape(8.dp)),
-                            contentAlignment = Alignment.Center) {
-                            Icon(Icons.Outlined.DarkMode, contentDescription = null, tint = palette.muted,
-                                modifier = Modifier.size(20.dp))
-                        }
-                        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                            Text("深色模式", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = palette.text)
-                            Text("設定頁與鍵盤使用暖色深色配色", fontSize = 12.sp, color = palette.muted)
-                        }
-                        Switch(checked = darkMode, onCheckedChange = onDarkModeChange,
-                            colors = SwitchDefaults.colors(checkedTrackColor = palette.button,
-                                checkedThumbColor = Color(UiTheme.dark.ink), uncheckedTrackColor = palette.soft,
-                                uncheckedThumbColor = palette.muted, uncheckedBorderColor = palette.outline))
-                    }
-                }
-            }
-            SettingsSection("鍵盤操作", palette) {
-                Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(36.dp).background(palette.soft, RoundedCornerShape(8.dp)),
-                                contentAlignment = Alignment.Center) {
-                                Icon(Icons.Outlined.Settings, contentDescription = null, tint = palette.muted,
-                                    modifier = Modifier.size(20.dp))
-                            }
-                            Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                                Text("空白鍵滑動靈敏度", fontSize = 16.sp, fontWeight = FontWeight.Medium,
-                                    color = palette.text)
-                                Text("目前：${listOf("較低", "偏低", "標準", "偏高", "較高")[spaceCursorSensitivity - 1]}",
-                                    fontSize = 12.sp, color = palette.muted)
-                            }
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        Slider(
-                            value = spaceCursorSensitivity.toFloat(),
-                            onValueChange = { onSpaceCursorSensitivityChange(it.roundToInt()) },
-                            valueRange = 1f..5f,
-                            steps = 3,
-                            colors = SliderDefaults.colors(thumbColor = palette.button, activeTrackColor = palette.button,
-                                inactiveTrackColor = palette.outline, activeTickColor = Color.White,
-                                inactiveTickColor = palette.muted)
-                        )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("滑動較遠才移動", fontSize = 12.sp, color = palette.muted)
-                            Text("輕滑即可移動", fontSize = 12.sp, color = palette.muted)
                         }
                     }
                 }
             }
-            SettingsSection("符號快捷鍵", palette) {
-                SymbolKeyCard(symbolKey, onSymbolKeySave, onSymbolKeyReset, palette, fieldColors)
-            }
-            Text("Rime × 霧凇拼音", Modifier.fillMaxWidth().padding(bottom = 10.dp),
-                textAlign = TextAlign.Center, color = palette.muted, fontSize = 12.sp)
+            // Hidden while typing in a settings field so the bar doesn't ride on top of the keyboard.
+            if (!WindowInsets.isImeVisible) SettingsNavigationBar(tab, { tab = it }, palette)
+        }
+    }
+}
+
+private enum class SettingsTab(val label: String, val icon: ImageVector) {
+    START("開始", Icons.Outlined.Home),
+    INPUT("輸入", Icons.Outlined.Keyboard),
+    FEATURES("功能", Icons.Outlined.Extension),
+    MORE("其他", Icons.Outlined.Tune),
+}
+
+@Composable
+private fun SettingsNavigationBar(selected: SettingsTab, onSelect: (SettingsTab) -> Unit, palette: AppPalette) {
+    HorizontalDivider(color = palette.outline)
+    // The outer Box already pads for system bars, so the bar adds no insets of its own.
+    NavigationBar(containerColor = palette.page, tonalElevation = 0.dp, windowInsets = WindowInsets(0)) {
+        SettingsTab.entries.forEach { tab ->
+            NavigationBarItem(
+                selected = tab == selected,
+                onClick = { onSelect(tab) },
+                icon = { Icon(tab.icon, contentDescription = null) },
+                label = { Text(tab.label, fontSize = 12.sp) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = palette.accent, selectedTextColor = palette.accent,
+                    indicatorColor = palette.soft,
+                    unselectedIconColor = palette.muted, unselectedTextColor = palette.muted
+                )
+            )
         }
     }
 }
@@ -610,6 +740,109 @@ private fun GiphyKeyCard(savedKey: String, onSave: (String) -> Unit, palette: Ap
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun InputSchemeCard(selected: InputScheme, onSelect: (InputScheme) -> Unit, palette: AppPalette) {
+    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            InputScheme.entries.forEach { scheme ->
+                val active = scheme == selected
+                Row(
+                    Modifier.fillMaxWidth()
+                        .background(if (active) palette.soft else Color.Transparent, RoundedCornerShape(10.dp))
+                        .border(1.dp, if (active) palette.button else palette.outline, RoundedCornerShape(10.dp))
+                        .clickable { onSelect(scheme) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(when (scheme) {
+                            InputScheme.PINYIN -> "拼音"
+                            InputScheme.ZHUYIN -> "注音"
+                        }, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = palette.text)
+                        Text(when (scheme) {
+                            InputScheme.PINYIN -> "霧凇拼音，全拼與簡拼"
+                            InputScheme.ZHUYIN -> "大千式鍵盤 ㄅㄆㄇㄈ，可省略聲調"
+                        }, fontSize = 12.sp, color = palette.muted)
+                    }
+                    if (active) Icon(Icons.Outlined.CheckCircle, contentDescription = "使用中",
+                        tint = palette.button, modifier = Modifier.size(20.dp))
+                }
+            }
+            Text("兩種方案共用同一份詞庫與詞頻；英文模式與密碼欄位一律使用英文鍵盤。",
+                fontSize = 12.sp, lineHeight = 18.sp, color = palette.muted)
+        }
+    }
+}
+
+@Composable
+private fun VoiceInputCard(
+    model: VoiceModel.State,
+    micGranted: Boolean,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    onDelete: () -> Unit,
+    onMicPermission: () -> Unit,
+    palette: AppPalette
+) {
+    val sizeMb = VoiceModel.totalBytes / 1_000_000
+    val buttonColors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = Color.White,
+        disabledContainerColor = palette.soft, disabledContentColor = palette.muted)
+    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = palette.card)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(36.dp).background(palette.soft, RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center) {
+                    Icon(if (model == VoiceModel.State.Ready) Icons.Outlined.CheckCircle else Icons.Outlined.Mic,
+                        contentDescription = null, modifier = Modifier.size(20.dp),
+                        tint = if (model == VoiceModel.State.Ready) palette.success else palette.muted)
+                }
+                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text("離線語音模型", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = palette.text)
+                    Text(when (model) {
+                        VoiceModel.State.Missing -> "尚未下載・約 $sizeMb MB"
+                        is VoiceModel.State.Downloading ->
+                            "下載中 ${model.downloaded * 100 / model.total.coerceAtLeast(1)}%" +
+                                "・${model.downloaded / 1_000_000} / ${model.total / 1_000_000} MB"
+                        VoiceModel.State.Ready -> "已就緒・SenseVoice 中英辨識"
+                        is VoiceModel.State.Failed -> model.message
+                    }, fontSize = 12.sp, color = if (model is VoiceModel.State.Failed)
+                        MaterialTheme.colorScheme.error else palette.muted)
+                }
+            }
+            if (model is VoiceModel.State.Downloading) {
+                LinearProgressIndicator(
+                    progress = { model.downloaded.toFloat() / model.total.coerceAtLeast(1) },
+                    modifier = Modifier.fillMaxWidth(), color = palette.button, trackColor = palette.soft
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                when (model) {
+                    is VoiceModel.State.Downloading -> TextButton(onClick = onCancel) { Text("暫停下載") }
+                    VoiceModel.State.Ready -> TextButton(onClick = onDelete) { Text("刪除模型") }
+                    else -> Button(onClick = onDownload, shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp), colors = buttonColors) {
+                        Text(if (model is VoiceModel.State.Failed) "重新下載" else "下載模型（約 $sizeMb MB）")
+                    }
+                }
+            }
+            HorizontalDivider(color = palette.outline)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("麥克風權限", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = palette.text)
+                    Text(if (micGranted) "已允許" else "語音輸入需要使用麥克風", fontSize = 12.sp, color = palette.muted)
+                }
+                if (!micGranted) TextButton(onClick = onMicPermission) { Text("允許") }
+                else Icon(Icons.Outlined.CheckCircle, contentDescription = "已允許", tint = palette.success,
+                    modifier = Modifier.size(20.dp))
+            }
+            Text("下載後按住空白鍵說話，鬆開即輸入；往左滑取消、往右滑輸入並傳送。辨識完全在手機上進行，" +
+                "聲音不會上傳；模型較大，建議使用 Wi-Fi 下載，中斷後可接續。",
+                fontSize = 12.sp, lineHeight = 18.sp, color = palette.muted)
         }
     }
 }
